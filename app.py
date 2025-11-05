@@ -3,13 +3,15 @@ import pandas as pd
 import folium
 from streamlit_folium import st_folium
 from shapely.geometry import Polygon, Point
+from shapely.ops import unary_union # اضافه شده برای مدیریت چند پلی‌گون
 import requests
 import os
 
 st.set_page_config(page_title="ارزیابی خسارت مدارس", layout="wide")
 st.title("ارزیابی خسارت مدارس در بحران")
 
-# چک کردن فایل
+# --- چک کردن فایل و بارگذاری داده‌ها ---
+
 if not os.path.exists("schools.csv"):
     st.error("فایل `schools.csv` در ریشه ریپازیتوری پیدا نشد!")
     st.stop()
@@ -40,7 +42,6 @@ def load_data():
                 return 'نامشخص'
 
         df['دسته_مقطع'] = df['مقطع_تحصیلی'].apply(categorize_grade)
-        # --------------------------------------------
         return df
     except Exception as e:
         st.error(f"خطا در خواندن فایل: {e}")
@@ -51,7 +52,7 @@ if df.empty:
     st.warning("هیچ داده معتبری در فایل نیست.")
     st.stop()
 
-# --- ۱. فیلترهای جانبی ---
+# --- ۱. فیلترهای جانبی (Sidebar) ---
 
 st.sidebar.header("تنظیمات فیلتر")
 
@@ -80,7 +81,7 @@ if filtered_df.empty:
 
 st.info(f"تعداد کل مدارس نمایش داده شده: **{len(filtered_df)}** از **{len(df)}**")
 
-# --- ۲. نقشه و لایه بندی با رنگ‌های جدید ---
+# --- ۲. نقشه و لایه بندی ---
 
 if 'initial_map_location' not in st.session_state:
      st.session_state.initial_map_location = [35.6892, 51.3890]
@@ -137,16 +138,17 @@ for _, row in filtered_df.iterrows():
         popup=folium.Popup(tooltip.replace("<br>", "\n"), max_width=300)
     ).add_to(group)
 
+# ابزار کشیدن (Draw) با فعال بودن ویرایش
 from folium.plugins import Draw
 Draw(
     draw_options={'polyline':False,'rectangle':False,'circle':False,'marker':False,'circlemarker':False},
-    edit_options={'edit':True, 'remove':True}
+    edit_options={'edit':True, 'remove':True} # ویرایش و حذف فعال است
 ).add_to(m)
 
 folium.LayerControl().add_to(m)
 
 
-# --- ۳. جستجوی مکان و نمایش نقشه ---
+# --- ۳. جستجوی مکان ---
 
 @st.cache_data(ttl=3600)
 def geocode_search(query):
@@ -179,20 +181,35 @@ if go and search:
     else:
         st.error("جستجو نشد یا نتیجه‌ای برای آن مکان یافت نشد.")
 
-st.markdown("### نقشه مدارس (ماوس روی نقاط → مشخصات)")
+st.markdown("### نقشه مدارس (ماوس روی نقاط → مشخصات و ابزار ترسیم)")
 map_data = st_folium(m, width=1200, height=600, key="folium_map")
 
-# --- ۴. تحلیل پلی‌گون و نمایش گزارش تفصیلی ---
+# --- ۴. تحلیل تمامی پلی‌گون‌های ترسیم شده و نمایش گزارش تفصیلی ---
 
-if map_data and map_data.get("last_active_drawing"):
-    drawing = map_data["last_active_drawing"]
-    if drawing["geometry"]["type"] == "Polygon":
-        coords = drawing["geometry"]["coordinates"][0]
-        poly = Polygon(coords)
+if map_data and map_data.get("all_drawings"):
+    all_drawings = map_data["all_drawings"]
+    
+    # فیلتر کردن تنها پلی‌گون‌ها
+    polygons_coords = [
+        drawing["geometry"]["coordinates"][0]
+        for drawing in all_drawings
+        if drawing["geometry"]["type"] == "Polygon"
+    ]
+    
+    if polygons_coords:
+        try:
+            shapely_polygons = [Polygon(coords) for coords in polygons_coords]
+            # ادغام تمام پلی‌گون‌ها برای پشتیبانی از چندین محدوده مجزا
+            multi_poly = unary_union(shapely_polygons)
+        except Exception:
+             st.warning("اشکالی در ایجاد هندسه پلی‌گون‌ها وجود دارد. لطفاً شکل‌های ترسیمی را بررسی کنید.")
+             st.stop()
         
+        # محاسبه نقاط داخل هندسه (MultiPolygon)
         inside = [
             row for _, row in filtered_df.iterrows()
-            if poly.contains(Point(row["طول_جغرافیایی"], row["عرض_جغرافیایی"]))
+            # Shapely از ترتیب (Lon, Lat) استفاده می‌کند: Point(طول_جغرافیایی, عرض_جغرافیایی)
+            if multi_poly.contains(Point(row["طول_جغرافیایی"], row["عرض_جغرافیایی"]))
         ]
         
         if inside:
@@ -203,25 +220,22 @@ if map_data and map_data.get("last_active_drawing"):
             total_students = result['تعداد_دانش_آموز'].sum()
             total_teachers = result['تعداد_معلم'].sum()
             
-            st.success(f"مدارس در محدوده: **{total_schools}**")
+            st.success(f"مدارس در محدوده‌های انتخابی: **{total_schools}**")
             st.info(f"جمع کل دانش‌آموزان: **{total_students}** | جمع کل معلمان: **{total_teachers}**")
             
             st.markdown("---")
-            st.markdown("### گزارش تفصیلی محدوده آسیب‌دیده")
+            st.markdown("### گزارش تفصیلی محدوده‌های آسیب‌دیده")
 
-            # --- گزارش تفکیک شده در دو ستون (درخواست شما) ---
             col_report1, col_report2 = st.columns(2)
 
             with col_report1:
                 st.subheader("تعداد مدارس به تفکیک مقطع")
-                # محاسبه تعداد مدارس به تفکیک دسته مقطع
                 category_counts = result.groupby('دسته_مقطع').size().reset_index(name='تعداد مدارس')
                 category_counts.columns = ['دسته مقطع', 'تعداد مدارس']
                 st.dataframe(category_counts, use_container_width=True, hide_index=True)
 
             with col_report2:
                 st.subheader("تعداد دانش‌آموزان به تفکیک جنسیت")
-                # محاسبه مجموع دانش‌آموزان به تفکیک جنسیت
                 gender_student_counts = result.groupby('جنسیت')['تعداد_دانش_آموز'].sum().reset_index(name='تعداد دانش‌آموز')
                 gender_student_counts.columns = ['جنسیت', 'تعداد دانش‌آموز']
                 st.dataframe(gender_student_counts, use_container_width=True, hide_index=True)
@@ -236,4 +250,6 @@ if map_data and map_data.get("last_active_drawing"):
             csv = result.to_csv(index=False, encoding="utf-8-sig").encode()
             st.download_button("دانلود لیست (CSV)", csv, "مدارس_آسیب_دیده.csv", "text/csv")
         else:
-            st.warning("هیچ مدرسه‌ای در محدوده نیست.")
+            st.warning("هیچ مدرسه‌ای در محدوده‌های انتخابی نیست.")
+    else:
+        st.warning("لطفاً یک یا چند پلی‌گون روی نقشه ترسیم کنید.")

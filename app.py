@@ -36,11 +36,9 @@ if df.empty:
 if 'map_obj' not in st.session_state:
     m = folium.Map(location=[35.6892, 51.3890], zoom_start=11, tiles="OpenStreetMap")
     
-    # اضافه کردن مارکرها
+    # مارکرها
     for _, row in df.iterrows():
         lat, lon = row['عرض_جغرافیایی'], row['طول_جغرافیایی']
-        if pd.isna(lat) or pd.isna(lon):
-            continue
         tooltip = (
             f"<b>{row['نام_مدرسه']}</b><br>"
             f"مدیر: {row['نام_مدیر']}<br>"
@@ -59,7 +57,7 @@ if 'map_obj' not in st.session_state:
             popup=folium.Popup(tooltip.replace("<br>", "\n"), max_width=300)
         ).add_to(m)
     
-    # ابزار کشیدن
+    # ابزار کشیدن + ویرایش
     from folium.plugins import Draw
     Draw(
         draw_options={'polyline':False,'rectangle':False,'circle':False,'marker':False,'circlemarker':False},
@@ -97,7 +95,7 @@ if go and search:
 st.markdown("### نقشه مدارس (ماوس روی نقاط → مشخصات)")
 map_data = st_folium(m, width=1200, height=600, key="folium_map")
 
-# پلی‌گون
+# پلی‌گون + ویرایش
 if map_data and map_data.get("last_active_drawing"):
     drawing = map_data["last_active_drawing"]
     if drawing["geometry"]["type"] == "Polygon":
@@ -110,11 +108,29 @@ if map_data and map_data.get("last_active_drawing"):
         if inside:
             result = pd.DataFrame(inside)
             st.success(f"مدارس در محدوده: **{len(inside)}**")
-            st.dataframe(
-                result[["نام_مدرسه", "نام_مدیر", "مقطع_تحصیلی", "تعداد_دانش_آموز", "تعداد_معلم", "جنسیت"]],
-                width='stretch'
-            )
-            csv = result.to_csv(index=False, encoding="utf-8-sig").encode()
+
+            # اضافه کردن تولتیپ در جدول
+            def make_tooltip(row):
+                return (
+                    f"<b>{row['نام_مدرسه']}</b><br>"
+                    f"مدیر: {row['نام_مدیر']}<br>"
+                    f"مقطع: {row['مقطع_تحصیلی']}<br>"
+                    f"دانش‌آموز: {row['تعداد_دانش_آموز']}<br>"
+                    f"معلم: {row['تعداد_معلم']}<br>"
+                    f"جنسیت: {row['جنسیت']}"
+                )
+            result['تولتیپ'] = result.apply(make_tooltip, axis=1)
+
+            # نمایش جدول با تولتیپ
+            st.markdown("#### لیست مدارس آسیب‌دیده")
+            for _, row in result.iterrows():
+                with st.expander(f"{row['نام_مدرسه']} — {row['نام_مدیر']}"):
+                    st.markdown(row['تولتیپ'], unsafe_allow_html=True)
+
+            # دانلود
+            csv = result.drop(columns=['تولتیپ']).to_csv(index=False, encoding="utf-8-sig").encode()
             st.download_button("دانلود لیست (CSV)", csv, "مدارس_آسیب_دیده.csv", "text/csv")
         else:
             st.warning("هیچ مدرسه‌ای در محدوده نیست.")
+else:
+    st.info("یک محدوده روی نقشه بکشید تا مدارس داخل آن نمایش داده شوند.")

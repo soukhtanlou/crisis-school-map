@@ -2,29 +2,35 @@ import streamlit as st
 import pandas as pd
 import folium
 from streamlit_folium import st_folium
-import json
 from shapely.geometry import Polygon, Point
 import requests
 
 # تنظیمات صفحه
 st.set_page_config(page_title="ارزیابی خسارت مدارس", layout="wide")
-st.title("🛡️ ارزیابی خسارت مدارس در بحران")
+st.title("ارزیابی خسارت مدارس در بحران")
 st.markdown("---")
 
 # خواندن دیتاست
 @st.cache_data
 def load_data():
-    df = pd.read_csv("schools.csv", encoding="utf-8")
-    return df
+    try:
+        df = pd.read_csv("schools.csv", encoding="utf-8-sig")
+        return df
+    except Exception as e:
+        st.error(f"خطا در خواندن فایل: {e}")
+        return pd.DataFrame()
 
 df = load_data()
+
+if df.empty:
+    st.stop()
 
 # ساخت نقشه
 m = folium.Map(location=[35.6892, 51.3890], zoom_start=11, tiles="OpenStreetMap")
 
-# اضافه کردن مارکرهای مدارس با تولتیپ
+# اضافه کردن مارکرها با تولتیپ
 for idx, row in df.iterrows():
-    tooltip_html = (
+    tooltip = (
         f"<b>{row['نام_مدرسه']}</b><br>"
         f"مدیر: {row['نام_مدیر']}<br>"
         f"مقطع: {row['مقطع_تحصیلی']}<br>"
@@ -34,20 +40,25 @@ for idx, row in df.iterrows():
     
     folium.CircleMarker(
         location=[row['عرض_جغرافیایی'], row['طول_جغرافیایی']],
-        radius=6,
-        popup=tooltip_html.replace("<br>", "\n"),
-        tooltip=folium.Tooltip(tooltip_html, sticky=True, permanent=False),
-        color="blue",
+        radius=7,
+        popup=folium.Popup(tooltip.replace("<br>", "\n"), max_width=300),
+        tooltip=folium.Tooltip(tooltip, sticky=True),
+        color="#3388ff",
         fill=True,
-        fillColor="lightblue",
-        fillOpacity=0.8,
-        weight=2
+        fillColor="#3388ff",
+        fillOpacity=0.8
     ).add_to(m)
 
-# اضافه کردن ابزار کشیدن پلی‌گون
+# ابزار کشیدن پلی‌گون
 from folium.plugins import Draw
 draw = Draw(
-    draw_options={'polyline': False, 'rectangle': False, 'circle': False, 'marker': False, 'circlemarker': False},
+    draw_options={
+        'polyline': False,
+        'rectangle': False,
+        'circle': False,
+        'marker': False,
+        'circlemarker': False
+    },
     edit_options={'remove': True}
 )
 draw.add_to(m)
@@ -55,77 +66,66 @@ draw.add_to(m)
 # سرچ‌بار
 col1, col2 = st.columns([3, 1])
 with col1:
-    search = st.text_input("🔍 جستجوی مکان (مثلاً: تجریش، شهرک غرب، ورامین)", placeholder="نام شهر/روستا را وارد کنید...")
+    search = st.text_input("جستجوی مکان (مثلاً: تجریش، شهرک غرب، ورامین)", "")
 with col2:
-    search_btn = st.button("برو به مکان", use_container_width=True)
+    st.markdown("<br>", unsafe_allow_html=True)
+    search_btn = st.button("برو به مکان")
 
 if search_btn and search:
     try:
-        # استفاده از Nominatim (OSM) برای سرچ
-        url = f"https://nominatim.openstreetmap.org/search?format=json&q={search}+تهران&limit=1"
-        headers = {'User-Agent': 'CrisisSchoolApp/1.0 (contact@example.com)'}
-        response = requests.get(url, headers=headers).json()
+        url = f"https://nominatim.openstreetmap.org/search"
+        params = {
+            'q': f"{search}, تهران, ایران",
+            'format': 'json',
+            'limit': 1
+        }
+        headers = {'User-Agent': 'CrisisSchoolMap/1.0'}
+        response = requests.get(url, params=params, headers=headers).json()
         if response:
             lat = float(response[0]["lat"])
             lon = float(response[0]["lon"])
             m.location = [lat, lon]
             m.zoom_start = 14
-            st.success(f"✅ مکان یافت شد: {response[0].get('display_name', '').split(',')[0]}")
+            st.success(f"مکان یافت شد: {response[0]['display_name'].split(',')[0]}")
         else:
-            st.error("❌ مکان یافت نشد. نام را دقیق‌تر وارد کنید.")
-    except Exception as e:
-        st.error(f"❌ خطا در جستجو: {str(e)}")
+            st.error("مکان یافت نشد.")
+    except:
+        st.error("خطا در جستجو.")
 
 # نمایش نقشه
-st.markdown("### 🗺️ نقشه مدارس (ماوس روی نقاط → مشخصات مدرسه)")
-map_output = st_folium(m, width=1200, height=600, key="map")
+st.markdown("### نقشه مدارس (ماوس روی نقاط → مشخصات)")
+map_data = st_folium(m, width=1200, height=600, key="map")
 
-# پردازش پلی‌گون (وقتی کاربر محدوده می‌کشه)
-if map_output and 'last_active_drawing' in map_output:
-    drawing = map_output['last_active_drawing']
-    if drawing and drawing.get('geometry', {}).get('type') == 'Polygon':
-        coords = drawing['geometry']['coordinates'][0]
-        poly_coords = [(p[0], p[1]) for p in coords]  # lon, lat to (x,y)
-        poly = Polygon(poly_coords)
+# پردازش پلی‌گون
+if map_data and map_data.get("last_active_drawing"):
+    drawing = map_data["last_active_drawing"]
+    if drawing["geometry"]["type"] == "Polygon":
+        coords = drawing["geometry"]["coordinates"][0]
+        poly = Polygon([(lon, lat) for lon, lat in coords])
         
-        inside_schools = []
+        inside = []
         for _, row in df.iterrows():
-            school_point = Point(row['طول_جغرافیایی'], row['عرض_جغرافیایی'])
-            if poly.contains(school_point):
-                inside_schools.append(row)
+            point = Point(row["طول_جغرافیایی"], row["عرض_جغرافیایی"])
+            if poly.contains(point):
+                inside.append(row.to_dict())
         
-        if inside_schools:
-            st.success(f"✅ **{len(inside_schools)}** مدرسه در محدوده آسیب‌دیده شناسایی شد!")
-            result_df = pd.DataFrame(inside_schools)
+        if inside:
+            st.success(f"تعداد مدارس در محدوده: **{len(inside)}**")
+            result_df = pd.DataFrame(inside)
             st.dataframe(
                 result_df[["نام_مدرسه", "نام_مدیر", "مقطع_تحصیلی", "تعداد_دانش_آموز", "تعداد_معلم", "جنسیت"]],
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "تعداد_دانش_آموز": st.column_config.NumberColumn("تعداد دانش‌آموز", format="%d"),
-                    "تعداد_معلم": st.column_config.NumberColumn("تعداد معلم", format="%d")
-                }
+                use_container_width=True
             )
-            
-            # دکمه دانلود CSV
-            csv_data = result_df.to_csv(index=False, encoding="utf-8-sig")
-            st.download_button(
-                label="📥 دانلود لیست مدارس آسیب‌دیده (CSV)",
-                data=csv_data.encode('utf-8-sig'),
-                file_name="مدارس_آسیب_دیده.csv",
-                mime="text/csv"
-            )
+            csv = result_df.to_csv(index=False, encoding="utf-8-sig").encode()
+            st.download_button("دانلود CSV", csv, "مدارس_آسیب_دیده.csv", "text/csv")
         else:
-            st.warning("⚠️ هیچ مدرسه‌ای در محدوده مشخص‌شده نیست. محدوده را بزرگ‌تر کنید.")
+            st.warning("هیچ مدرسه‌ای در محدوده نیست.")
 
 # راهنما
-with st.expander("📖 راهنما استفاده"):
+with st.expander("راهنما"):
     st.markdown("""
-    1. **نقشه را ببینید**: نقاط آبی مدارس هستند. ماوس روی آن‌ها → مشخصات نمایش داده می‌شود.
-    2. **جستجو کنید**: نام مکان (مثل "تجریش") را وارد و دکمه بزنید → نقشه به آنجا می‌رود.
-    3. **محدوده بکشید**: از نوار ابزار بالا سمت چپ نقشه، ابزار **Polygon** را انتخاب کنید و محدوده آسیب را بکشید.
-    4. **نتیجه را ببینید**: بعد از کشیدن، جدول مدارس داخل محدوده ظاهر می‌شود + دانلود CSV.
+    1. ماوس روی نقاط → مشخصات مدرسه  
+    2. جستجو → رفتن به مکان  
+    3. ابزار پلی‌گون → کشیدن محدوده  
+    4. نتیجه → جدول + دانلود
     """)
-
-st.markdown("---")
-st.caption("💡 ساخته‌شده با Streamlit | داده‌ها: نمونه تهران | تماس: your-email@example.com")

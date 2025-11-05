@@ -16,7 +16,7 @@ if not os.path.exists("schools.csv"):
 
 @st.cache_data
 def load_data():
-    """بارگذاری و پاکسازی داده‌ها با کشینگ."""
+    """بارگذاری، پاکسازی و دسته‌بندی داده‌ها با کشینگ."""
     try:
         df = pd.read_csv("schools.csv", encoding="utf-8-sig")
         df = df.dropna(subset=['عرض_جغرافیایی', 'طول_جغرافیایی'])
@@ -25,6 +25,20 @@ def load_data():
         df['تعداد_دانش_آموز'] = pd.to_numeric(df['تعداد_دانش_آموز'], errors='coerce').fillna(0).astype(int)
         df['تعداد_معلم'] = pd.to_numeric(df['تعداد_معلم'], errors='coerce').fillna(0).astype(int)
         df = df.dropna(subset=['عرض_جغرافیایی', 'طول_جغرافیایی'])
+        
+        # --- تابع دسته‌بندی مقاطع برای رنگ بندی ---
+        def categorize_grade(grade):
+            if 'دبستان' in grade or 'پیش دبستانی' in grade:
+                return 'ابتدایی/دبستان'
+            elif 'متوسطه' in grade:
+                return 'متوسطه'
+            elif 'فنی و حرفه‌ای' in grade:
+                return 'فنی و حرفه‌ای'
+            else:
+                return 'مراکز/سایر'
+
+        df['دسته_مقطع'] = df['مقطع_تحصیلی'].apply(categorize_grade)
+        # --------------------------------------------
         return df
     except Exception as e:
         st.error(f"خطا در خواندن فایل: {e}")
@@ -35,16 +49,16 @@ if df.empty:
     st.warning("هیچ داده معتبری در فایل نیست.")
     st.stop()
 
-# --- ۱. فیلترهای جانبی (Suggestions 2, 4) و ۳. نمایش تعداد کل مدارس (Suggestion 3) ---
+# --- ۱. فیلترهای جانبی و دسته‌بندی ---
 
 st.sidebar.header("تنظیمات فیلتر")
 
-# فیلتر مقطع تحصیلی
-grade_levels = df['مقطع_تحصیلی'].unique()
-selected_grades = st.sidebar.multiselect(
-    "فیلتر بر اساس مقطع تحصیلی:",
-    options=grade_levels,
-    default=grade_levels
+# فیلتر بر اساس ستون جدید دسته‌بندی
+grade_categories = df['دسته_مقطع'].unique()
+selected_categories = st.sidebar.multiselect(
+    "فیلتر بر اساس دسته مقطع تحصیلی:",
+    options=grade_categories,
+    default=grade_categories
 )
 
 # فیلتر جنسیت
@@ -56,22 +70,19 @@ selected_genders = st.sidebar.multiselect(
 )
 
 filtered_df = df[
-    df['مقطع_تحصیلی'].isin(selected_grades) &
+    df['دسته_مقطع'].isin(selected_categories) &
     df['جنسیت'].isin(selected_genders)
 ].copy()
 
-# نمایش پیام در صورت خالی بودن داده فیلتر شده (Suggestion 4)
 if filtered_df.empty:
     st.warning("با تنظیمات فیلتر فعلی، هیچ مدرسه معتبری برای نمایش وجود ندارد.")
     st.stop()
 
-# نمایش تعداد کل مدارس نمایش داده شده (Suggestion 3)
 st.info(f"تعداد کل مدارس نمایش داده شده: **{len(filtered_df)}** از **{len(df)}**")
 
 
-# --- ۲. نقشه و لایه بندی (Suggestion 8) ---
+# --- ۲. نقشه و لایه بندی با رنگ‌های جدید ---
 
-# حفظ موقعیت اولیه نقشه در Session State
 if 'initial_map_location' not in st.session_state:
      st.session_state.initial_map_location = [35.6892, 51.3890]
      st.session_state.initial_map_zoom = 11
@@ -82,39 +93,41 @@ m = folium.Map(
     tiles="OpenStreetMap"
 )
 
-# تعریف رنگ‌ها و FeatureGroup برای لایه‌بندی
-grade_colors = {
-    'ابتدایی': '#28a745', 
-    'متوسطه اول': '#ffc107', 
-    'متوسطه دوم': '#dc3545', 
+# --- تعریف کد رنگی جدید برای دسته‌بندی‌ها ---
+category_colors = {
+    'ابتدایی/دبستان': '#28a745',       # سبز
+    'متوسطه': '#007bff',               # آبی
+    'فنی و حرفه‌ای': '#ffc107',        # زرد/نارنجی
+    'مراکز/سایر': '#dc3545',           # قرمز (برای مراکز خاص و سایر)
 }
+# -----------------------------------------------
 
-grade_groups = {}
-for grade in grade_levels:
-    color = grade_colors.get(grade, '#007bff')
-    # FeatureGroup به عنوان لایه برای LayerControl (Suggestion 8)
-    group = folium.FeatureGroup(name=f"مقطع: {grade}", show=True)
-    grade_groups[grade] = {'group': group, 'color': color}
+category_groups = {}
+for category in grade_categories:
+    color = category_colors.get(category, '#6c757d') # رنگ خاکستری برای موارد ناشناخته
+    group = folium.FeatureGroup(name=f"دسته: {category}", show=True)
+    category_groups[category] = {'group': group, 'color': color}
     group.add_to(m)
 
 
 # اضافه کردن مارکرها به FeatureGroup های مربوطه
 for _, row in filtered_df.iterrows():
     lat, lon = row['عرض_جغرافیایی'], row['طول_جغرافیایی']
-    grade = row['مقطع_تحصیلی']
+    category = row['دسته_مقطع']
     
-    # اطمینان از وجود مقطع در دیکشنری
-    group_data = grade_groups.get(grade, grade_groups.get(grade_levels[0], {'group': folium.FeatureGroup(name="سایر"), 'color': '#007bff'}))
+    group_data = category_groups.get(category)
+    if not group_data: # اگر داده‌ای ناخواسته از فیلتر گذشته بود
+         continue
+
     group = group_data['group']
     color = group_data['color']
     
     tooltip = (
         f"<b>{row['نام_مدرسه']}</b><br>"
+        f"مقطع: **{row['مقطع_تحصیلی']}** ({row['دسته_مقطع']})<br>"
         f"مدیر: {row['نام_مدیر']}<br>"
-        f"مقطع: {grade}<br>"
         f"دانش‌آموز: {row['تعداد_دانش_آموز']}<br>"
-        f"معلم: {row['تعداد_معلم']}<br>"
-        f"جنسیت: {row['جنسیت']}"
+        f"معلم: {row['تعداد_معلم']}"
     )
     
     folium.CircleMarker(
@@ -125,7 +138,7 @@ for _, row in filtered_df.iterrows():
         fillColor=color,
         tooltip=folium.Tooltip(tooltip, sticky=True),
         popup=folium.Popup(tooltip.replace("<br>", "\n"), max_width=300)
-    ).add_to(group) # اضافه به گروه، نه مستقیم به نقشه
+    ).add_to(group)
 
 # ابزار کشیدن (Draw)
 from folium.plugins import Draw
@@ -134,15 +147,15 @@ Draw(
     edit_options={'edit':True, 'remove':True}
 ).add_to(m)
 
-# کنترل لایه‌ها (LayerControl) (Suggestion 8)
+# کنترل لایه‌ها (LayerControl)
 folium.LayerControl().add_to(m)
 
 
-# --- ۴. کش کردن جستجو (Suggestion 5) ---
+# --- ۳. جستجوی مکان و نمایش نقشه ---
 
 @st.cache_data(ttl=3600)
 def geocode_search(query):
-    """کش کردن نتایج جستجوی Nominatim (Suggestion 5)."""
+    """کش کردن نتایج جستجوی Nominatim."""
     try:
         r = requests.get(
             "https://nominatim.openstreetmap.org/search",
@@ -152,8 +165,7 @@ def geocode_search(query):
         if r:
             return float(r[0]["lat"]), float(r[0]["lon"]), r[0]['display_name'].split(',')[0]
         return None, None, None
-    except Exception as e:
-        st.error(f"خطا در جستجوی موقعیت جغرافیایی: {e}")
+    except Exception:
         return None, None, None
 
 col1, col2 = st.columns([3,1])
@@ -166,19 +178,16 @@ with col2:
 if go and search:
     lat, lon, name = geocode_search(search)
     if lat and lon:
-        # به‌روزرسانی وضعیت نقشه برای حفظ موقعیت جدید
         st.session_state.initial_map_location = [lat, lon]
         st.session_state.initial_map_zoom = 13
         st.success(f"رفت به: {name}")
     else:
         st.error("جستجو نشد یا نتیجه‌ای برای آن مکان یافت نشد.")
 
-# نمایش نقشه
 st.markdown("### نقشه مدارس (ماوس روی نقاط → مشخصات)")
-# نقشه هر بار با فیلتر جدید و موقعیت‌های ذخیره شده (session_state) مجددا رندر می‌شود.
 map_data = st_folium(m, width=1200, height=600, key="folium_map")
 
-# --- ۵. تحلیل پلی‌گون و نمایش آمار خلاصه (Suggestion 1 و 6) ---
+# --- ۴. تحلیل پلی‌گون و نمایش آمار خلاصه ---
 
 if map_data and map_data.get("last_active_drawing"):
     drawing = map_data["last_active_drawing"]
@@ -186,7 +195,6 @@ if map_data and map_data.get("last_active_drawing"):
         coords = drawing["geometry"]["coordinates"][0]
         poly = Polygon(coords)
         
-        # Shapely از ترتیب (Lon, Lat) استفاده می‌کند: Point(طول_جغرافیایی, عرض_جغرافیایی) (Suggestion 6)
         inside = [
             row for _, row in filtered_df.iterrows()
             if poly.contains(Point(row["طول_جغرافیایی"], row["عرض_جغرافیایی"]))
@@ -195,7 +203,7 @@ if map_data and map_data.get("last_active_drawing"):
         if inside:
             result = pd.DataFrame(inside)
             
-            # نمایش آمار خلاصه (Suggestion 1)
+            # نمایش آمار خلاصه
             total_students = result['تعداد_دانش_آموز'].sum()
             total_teachers = result['تعداد_معلم'].sum()
             
@@ -203,7 +211,7 @@ if map_data and map_data.get("last_active_drawing"):
             st.info(f"جمع کل دانش‌آموزان: **{total_students}** | جمع کل معلمان: **{total_teachers}**")
 
             st.dataframe(
-                result[["نام_مدرسه", "نام_مدیر", "مقطع_تحصیلی", "تعداد_دانش_آموز", "تعداد_معلم", "جنسیت"]],
+                result[["نام_مدرسه", "دسته_مقطع", "تعداد_دانش_آموز", "تعداد_معلم"]],
                 width='stretch'
             )
             csv = result.to_csv(index=False, encoding="utf-8-sig").encode()

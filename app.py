@@ -34,8 +34,10 @@ def load_data():
                 return 'متوسطه'
             elif 'فنی و حرفه‌ای' in grade:
                 return 'فنی و حرفه‌ای'
-            else:
+            elif 'مراکز' in grade:
                 return 'مراکز/سایر'
+            else:
+                return 'نامشخص'
 
         df['دسته_مقطع'] = df['مقطع_تحصیلی'].apply(categorize_grade)
         # --------------------------------------------
@@ -49,11 +51,10 @@ if df.empty:
     st.warning("هیچ داده معتبری در فایل نیست.")
     st.stop()
 
-# --- ۱. فیلترهای جانبی و دسته‌بندی ---
+# --- ۱. فیلترهای جانبی ---
 
 st.sidebar.header("تنظیمات فیلتر")
 
-# فیلتر بر اساس ستون جدید دسته‌بندی
 grade_categories = df['دسته_مقطع'].unique()
 selected_categories = st.sidebar.multiselect(
     "فیلتر بر اساس دسته مقطع تحصیلی:",
@@ -61,7 +62,6 @@ selected_categories = st.sidebar.multiselect(
     default=grade_categories
 )
 
-# فیلتر جنسیت
 genders = df['جنسیت'].unique()
 selected_genders = st.sidebar.multiselect(
     "فیلتر بر اساس جنسیت:",
@@ -80,7 +80,6 @@ if filtered_df.empty:
 
 st.info(f"تعداد کل مدارس نمایش داده شده: **{len(filtered_df)}** از **{len(df)}**")
 
-
 # --- ۲. نقشه و لایه بندی با رنگ‌های جدید ---
 
 if 'initial_map_location' not in st.session_state:
@@ -93,30 +92,28 @@ m = folium.Map(
     tiles="OpenStreetMap"
 )
 
-# --- تعریف کد رنگی جدید برای دسته‌بندی‌ها ---
 category_colors = {
-    'ابتدایی/دبستان': '#28a745',       # سبز
-    'متوسطه': '#007bff',               # آبی
-    'فنی و حرفه‌ای': '#ffc107',        # زرد/نارنجی
-    'مراکز/سایر': '#dc3545',           # قرمز (برای مراکز خاص و سایر)
+    'ابتدایی/دبستان': '#28a745',    # سبز
+    'متوسطه': '#007bff',            # آبی
+    'فنی و حرفه‌ای': '#ffc107',     # زرد/نارنجی
+    'مراکز/سایر': '#dc3545',        # قرمز 
+    'نامشخص': '#6c757d'             # خاکستری
 }
-# -----------------------------------------------
 
 category_groups = {}
 for category in grade_categories:
-    color = category_colors.get(category, '#6c757d') # رنگ خاکستری برای موارد ناشناخته
+    color = category_colors.get(category, '#6c757d') 
     group = folium.FeatureGroup(name=f"دسته: {category}", show=True)
     category_groups[category] = {'group': group, 'color': color}
     group.add_to(m)
 
 
-# اضافه کردن مارکرها به FeatureGroup های مربوطه
 for _, row in filtered_df.iterrows():
     lat, lon = row['عرض_جغرافیایی'], row['طول_جغرافیایی']
     category = row['دسته_مقطع']
     
     group_data = category_groups.get(category)
-    if not group_data: # اگر داده‌ای ناخواسته از فیلتر گذشته بود
+    if not group_data: 
          continue
 
     group = group_data['group']
@@ -140,14 +137,12 @@ for _, row in filtered_df.iterrows():
         popup=folium.Popup(tooltip.replace("<br>", "\n"), max_width=300)
     ).add_to(group)
 
-# ابزار کشیدن (Draw)
 from folium.plugins import Draw
 Draw(
     draw_options={'polyline':False,'rectangle':False,'circle':False,'marker':False,'circlemarker':False},
     edit_options={'edit':True, 'remove':True}
 ).add_to(m)
 
-# کنترل لایه‌ها (LayerControl)
 folium.LayerControl().add_to(m)
 
 
@@ -187,7 +182,7 @@ if go and search:
 st.markdown("### نقشه مدارس (ماوس روی نقاط → مشخصات)")
 map_data = st_folium(m, width=1200, height=600, key="folium_map")
 
-# --- ۴. تحلیل پلی‌گون و نمایش آمار خلاصه ---
+# --- ۴. تحلیل پلی‌گون و نمایش گزارش تفصیلی ---
 
 if map_data and map_data.get("last_active_drawing"):
     drawing = map_data["last_active_drawing"]
@@ -203,16 +198,40 @@ if map_data and map_data.get("last_active_drawing"):
         if inside:
             result = pd.DataFrame(inside)
             
-            # نمایش آمار خلاصه
+            # --- گزارش خلاصه کلی ---
+            total_schools = len(inside)
             total_students = result['تعداد_دانش_آموز'].sum()
             total_teachers = result['تعداد_معلم'].sum()
             
-            st.success(f"مدارس در محدوده: **{len(inside)}**")
+            st.success(f"مدارس در محدوده: **{total_schools}**")
             st.info(f"جمع کل دانش‌آموزان: **{total_students}** | جمع کل معلمان: **{total_teachers}**")
+            
+            st.markdown("---")
+            st.markdown("### گزارش تفصیلی محدوده آسیب‌دیده")
 
+            # --- گزارش تفکیک شده در دو ستون (درخواست شما) ---
+            col_report1, col_report2 = st.columns(2)
+
+            with col_report1:
+                st.subheader("تعداد مدارس به تفکیک مقطع")
+                # محاسبه تعداد مدارس به تفکیک دسته مقطع
+                category_counts = result.groupby('دسته_مقطع').size().reset_index(name='تعداد مدارس')
+                category_counts.columns = ['دسته مقطع', 'تعداد مدارس']
+                st.dataframe(category_counts, use_container_width=True, hide_index=True)
+
+            with col_report2:
+                st.subheader("تعداد دانش‌آموزان به تفکیک جنسیت")
+                # محاسبه مجموع دانش‌آموزان به تفکیک جنسیت
+                gender_student_counts = result.groupby('جنسیت')['تعداد_دانش_آموز'].sum().reset_index(name='تعداد دانش‌آموز')
+                gender_student_counts.columns = ['جنسیت', 'تعداد دانش‌آموز']
+                st.dataframe(gender_student_counts, use_container_width=True, hide_index=True)
+            
+            st.markdown("---")
+            st.subheader("لیست مدارس")
             st.dataframe(
-                result[["نام_مدرسه", "دسته_مقطع", "تعداد_دانش_آموز", "تعداد_معلم"]],
-                width='stretch'
+                result[["نام_مدرسه", "دسته_مقطع", "تعداد_دانش_آموز", "تعداد_معلم", "جنسیت"]],
+                width='stretch',
+                hide_index=True
             )
             csv = result.to_csv(index=False, encoding="utf-8-sig").encode()
             st.download_button("دانلود لیست (CSV)", csv, "مدارس_آسیب_دیده.csv", "text/csv")

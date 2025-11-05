@@ -4,35 +4,43 @@ import folium
 from streamlit_folium import st_folium
 from shapely.geometry import Polygon, Point
 import requests
+import os
 
 st.set_page_config(page_title="ارزیابی خسارت مدارس", layout="wide")
 st.title("ارزیابی خسارت مدارس در بحران")
 
-# خواندن فایل
+# چک کردن فایل
+if not os.path.exists("schools.csv"):
+    st.error("فایل `schools.csv` در ریشه ریپازیتوری پیدا نشد!")
+    st.stop()
+
 @st.cache_data
 def load_data():
     try:
         df = pd.read_csv("schools.csv", encoding="utf-8-sig")
         df = df.dropna(subset=['عرض_جغرافیایی', 'طول_جغرافیایی'])
+        df['عرض_جغرافیایی'] = pd.to_numeric(df['عرض_جغرافیایی'], errors='coerce')
+        df['طول_جغرافیایی'] = pd.to_numeric(df['طول_جغرافیایی'], errors='coerce')
+        df = df.dropna(subset=['عرض_جغرافیایی', 'طول_جغرافیایی'])
         return df
     except Exception as e:
-        st.error(f"فایل schools.csv پیدا نشد یا خطا دارد: {e}")
+        st.error(f"خطا در خواندن فایل: {e}")
         return pd.DataFrame()
 
 df = load_data()
 if df.empty:
+    st.warning("هیچ داده معتبری در فایل نیست.")
     st.stop()
 
-# نقشه
-if 'map' not in st.session_state:
-    st.session_state.map = folium.Map(location=[35.6892, 51.3890], zoom_start=11, tiles="OpenStreetMap")
-
-m = st.session_state.map
-
-# مارکرها — فقط یک بار
-if not hasattr(m, 'markers_added'):
+# نقشه — فقط یک بار
+if 'map_obj' not in st.session_state:
+    m = folium.Map(location=[35.6892, 51.3890], zoom_start=11, tiles="OpenStreetMap")
+    
+    # اضافه کردن مارکرها
     for _, row in df.iterrows():
         lat, lon = row['عرض_جغرافیایی'], row['طول_جغرافیایی']
+        if pd.isna(lat) or pd.isna(lon):
+            continue
         tooltip = (
             f"<b>{row['نام_مدرسه']}</b><br>"
             f"مدیر: {row['نام_مدیر']}<br>"
@@ -50,51 +58,63 @@ if not hasattr(m, 'markers_added'):
             tooltip=folium.Tooltip(tooltip, sticky=True),
             popup=folium.Popup(tooltip.replace("<br>", "\n"), max_width=300)
         ).add_to(m)
-    m.markers_added = True
-
-# ابزار کشیدن
-if not hasattr(m, 'draw_added'):
+    
+    # ابزار کشیدن
     from folium.plugins import Draw
     Draw(
         draw_options={'polyline':False,'rectangle':False,'circle':False,'marker':False,'circlemarker':False},
         edit_options={'edit':True, 'remove':True}
     ).add_to(m)
-    m.draw_added = True
+    
+    st.session_state.map_obj = m
+else:
+    m = st.session_state.map_obj
 
 # سرچ
 col1, col2 = st.columns([3,1])
 with col1:
-    search = st.text_input("جستجو", placeholder="مثلاً: مشهد، شیراز، تجریش")
+    search = st.text_input("جستجوی شهر/منطقه", placeholder="مثلاً: مشهد، شیراز، تجریش")
 with col2:
     st.markdown("<br>", unsafe_allow_html=True)
     go = st.button("برو")
 
 if go and search:
     try:
-        r = requests.get("https://nominatim.openstreetmap.org/search",
-                        params={'q': search, 'format': 'json', 'limit': 1},
-                        headers={'User-Agent': 'IranMap/1.0'}).json()
+        r = requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={'q': search, 'format': 'json', 'limit': 1},
+            headers={'User-Agent': 'IranCrisisMap/1.0'}
+        ).json()
         if r:
-            m.location = [float(r[0]["lat"]), float(r[0]["lon"])]
+            lat, lon = float(r[0]["lat"]), float(r[0]["lon"])
+            m.location = [lat, lon]
             m.zoom_start = 13
+            st.success(f"رفت به: {r[0]['display_name'].split(',')[0]}")
     except:
-        pass
+        st.error("جستجو نشد.")
 
 # نمایش نقشه
-st.markdown("### نقشه مدارس")
-map_data = st_folium(m, width=1200, height=600, key="map")
+st.markdown("### نقشه مدارس (ماوس روی نقاط → مشخصات)")
+map_data = st_folium(m, width=1200, height=600, key="folium_map")
 
 # پلی‌گون
 if map_data and map_data.get("last_active_drawing"):
-    d = map_data["last_active_drawing"]
-    if d["geometry"]["type"] == "Polygon":
-        coords = d["geometry"]["coordinates"][0]
+    drawing = map_data["last_active_drawing"]
+    if drawing["geometry"]["type"] == "Polygon":
+        coords = drawing["geometry"]["coordinates"][0]
         poly = Polygon(coords)
-        inside = [row for _, row in df.iterrows() if poly.contains(Point(row["طول_جغرافیایی"], row["عرض_جغرافیایی"]))]
+        inside = [
+            row for _, row in df.iterrows()
+            if poly.contains(Point(row["طول_جغرافیایی"], row["عرض_جغرافیایی"]))
+        ]
         if inside:
             result = pd.DataFrame(inside)
             st.success(f"مدارس در محدوده: **{len(inside)}**")
-            st.dataframe(result[["نام_مدرسه", "نام_مدیر", "مقطع_تحصیلی", "تعداد_دانش_آموز", "تعداد_معلم", "جنسیت"]])
-            st.download_button("دانلود CSV", result.to_csv(index=False, encoding="utf-8-sig").encode(), "مدارس.csv", "text/csv")
+            st.dataframe(
+                result[["نام_مدرسه", "نام_مدیر", "مقطع_تحصیلی", "تعداد_دانش_آموز", "تعداد_معلم", "جنسیت"]],
+                width='stretch'
+            )
+            csv = result.to_csv(index=False, encoding="utf-8-sig").encode()
+            st.download_button("دانلود لیست (CSV)", csv, "مدارس_آسیب_دیده.csv", "text/csv")
         else:
-            st.warning("هیچ مدرسه‌ای نیست.")
+            st.warning("هیچ مدرسه‌ای در محدوده نیست.")

@@ -6,30 +6,22 @@ from shapely.geometry import Polygon, Point
 from shapely.ops import unary_union
 import requests
 import os
-
-# --- GIS imports ---
-import geopandas as gpd
-import tempfile
-import zipfile
+import json
 
 
 st.set_page_config(page_title="ارزیابی خسارت مدارس", layout="wide")
 st.title("ارزیابی خسارت مدارس در بحران")
 
+
 # ===========================
 # 1) بارگذاری داده مدارس
 # ===========================
-
-if not os.path.exists("schools.csv"):
-    st.error("فایل `schools.csv` در ریشه ریپازیتوری پیدا نشد.")
-    st.stop()
-
 @st.cache_data
 def load_data():
     df = pd.read_csv("schools.csv", encoding="utf-8-sig")
 
     df = df.dropna(subset=["عرض_جغرافیایی", "طول_جغرافیایی"])
-    df["عرض_جغرافیایی"] = pd.to_numeric(df["عرض_جغرافیایی"], errors="coerce")
+    df["عرض_جغرافیایی"] = pd.to_numeric(df["عرض_گرافیایی"], errors="coerce")
     df["طول_جغرافیایی"] = pd.to_numeric(df["طول_جغرافیایی"], errors="coerce")
     df["تعداد_دانش_آموز"] = pd.to_numeric(df["تعداد_دانش_آموز"], errors="coerce").fillna(0).astype(int)
     df["تعداد_معلم"] = pd.to_numeric(df["تعداد_معلم"], errors="coerce").fillna(0).astype(int)
@@ -50,30 +42,34 @@ def load_data():
     return df
 
 
+if not os.path.exists("schools.csv"):
+    st.error("فایل schools.csv پیدا نشد!")
+    st.stop()
+
 df = load_data()
 st.info(f"تعداد مدارس دارای مختصات معتبر: **{len(df)}**")
+
 
 # ===========================
 # 2) Sidebar فیلتر‌ها + انتخاب نوع محدوده آسیب
 # ===========================
-
 st.sidebar.header("تنظیمات")
 
 damage_input_method = st.sidebar.radio(
     "روش تعیین محدوده خسارت:",
-    ("ترسیم دستی روی نقشه", "آپلود فایل GIS (SHP/GeoJSON/GPkg)")
+    ("ترسیم دستی روی نقشه", "آپلود لایه خسارت (GeoJSON)")
 )
 
 grade_categories = df["دسته_مقطع"].unique()
 selected_categories = st.sidebar.multiselect(
-    "فیلتر بر اساس مقطع:",
+    "فیلتر مقطع:",
     options=grade_categories,
     default=grade_categories
 )
 
 genders = df["جنسیت"].unique()
 selected_genders = st.sidebar.multiselect(
-    "فیلتر بر اساس جنسیت:",
+    "فیلتر جنسیت:",
     options=genders,
     default=genders
 )
@@ -83,10 +79,10 @@ filtered_df = df[
     df["جنسیت"].isin(selected_genders)
 ]
 
+
 # ===========================
 # 3) نقشه
 # ===========================
-
 if "initial_map_location" not in st.session_state:
     st.session_state.initial_map_location = [35.6892, 51.3890]
     st.session_state.initial_map_zoom = 11
@@ -97,7 +93,7 @@ m = folium.Map(
     tiles="OpenStreetMap"
 )
 
-# رنگ‌ها
+
 category_colors = {
     "ابتدایی/دبستان": "#28a745",
     "متوسطه": "#007bff",
@@ -106,21 +102,18 @@ category_colors = {
     "نامشخص": "#6c757d",
 }
 
-# لایه بندی دسته‌ها
 category_groups = {}
 for category in grade_categories:
-    color = category_colors.get(category, "#6c757d")
-    layer = folium.FeatureGroup(name=f"دسته: {category}", show=True)
-    category_groups[category] = {"layer": layer, "color": color}
-    m.add_child(layer)
+    group = folium.FeatureGroup(name=f"دسته: {category}", show=True)
+    category_groups[category] = group
+    m.add_child(group)
 
-# نمایش مدارس روی نقشه
+
+# نقاط مدارس روی نقشه
 for _, row in filtered_df.iterrows():
     lat, lon = row["عرض_جغرافیایی"], row["طول_جغرافیایی"]
     category = row["دسته_مقطع"]
-
-    layer = category_groups[category]["layer"]
-    color = category_groups[category]["color"]
+    color = category_colors.get(category, "#444")
 
     tooltip = (
         f"<b>{row['نام_مدرسه']}</b><br>"
@@ -133,107 +126,89 @@ for _, row in filtered_df.iterrows():
     folium.CircleMarker(
         location=[lat, lon],
         radius=7,
-        color=color,
-        fill=True,
-        fillColor=color,
+        color=color, fill=True, fillColor=color,
         tooltip=tooltip,
-    ).add_to(layer)
+    ).add_to(category_groups[category])
 
-# --------------------------
-# اگر کاربر محدوده را رسم کند (manual)
-# --------------------------
 
+# ===========================
+# 4) اضافه کردن ابزار ترسیم دستی
+# ===========================
 from folium.plugins import Draw
 
 if damage_input_method == "ترسیم دستی روی نقشه":
     Draw(
-        draw_options={'polyline':False,'rectangle':False,'circle':False,'marker':False,'circlemarker':False},
-        edit_options={'edit':True,'remove':True}
+        draw_options={'polyline': False, 'marker': False, 'circlemarker': False},
+        edit_options={'edit': True, 'remove': True},
     ).add_to(m)
 
 
-# --------------------------
-# اگر کاربر لایه GIS آپلود کند (SHP / GeoJSON / GPkg)
-# --------------------------
+# ===========================
+# 5) آپلود GeoJSON برای لایه خسارت ماهواره‌ای
+# ===========================
 
 damage_polygons = None
 
-if damage_input_method == "آپلود فایل GIS (SHP/GeoJSON/GPkg)":
-    uploaded = st.sidebar.file_uploader("آپلود فایل ZIP یا GeoJSON", type=["zip", "geojson", "gpkg"])
+if damage_input_method == "آپلود لایه خسارت (GeoJSON)":
+    uploaded = st.sidebar.file_uploader("آپلود GeoJSON", type=["geojson"])
 
     if uploaded:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            upload_path = os.path.join(tmpdir, uploaded.name)
+        geojson_data = json.load(uploaded)
 
-            with open(upload_path, "wb") as f:
-                f.write(uploaded.getbuffer())
+        damage_polygons = unary_union([
+            Polygon(feature["geometry"]["coordinates"][0])
+            for feature in geojson_data["features"]
+            if feature["geometry"]["type"] == "Polygon"
+        ])
 
-            if uploaded.name.endswith(".zip"):
-                with zipfile.ZipFile(upload_path, "r") as zip_ref:
-                    zip_ref.extractall(tmpdir)
-                gdf = gpd.read_file(tmpdir)
+        folium.GeoJson(
+            geojson_data,
+            name="Damage Layer",
+            style_function=lambda x: {"fillColor": "#ff000077", "color": "#ff0000", "weight": 2},
+        ).add_to(m)
 
-            else:
-                gdf = gpd.read_file(upload_path)
-
-            gdf = gdf.to_crs(epsg=4326)
-            damage_polygons = gdf.geometry.unary_union
-
-            folium.GeoJson(
-                gdf,
-                name="Damage Map",
-                style_function=lambda x: {
-                    "fillColor": "#ff000077",
-                    "color": "#ff0000",
-                    "weight": 2,
-                    "fillOpacity": 0.35
-                }
-            ).add_to(m)
 
 folium.LayerControl().add_to(m)
 
-# ===========================
-# 4) نمایش نقشه
-# ===========================
-
-st.subheader("نقشه مدارس و محدوده‌های آسیب")
-map_data = st_folium(m, width=1200, height=600, key="main_map")
 
 # ===========================
-# 5) تحلیل مدارس داخل محدوده آسیب
+# 6) نمایش نقشه
 # ===========================
+map_data = st_folium(m, width=1200, height=600)
 
+
+# ===========================
+# 7) تحلیل مدارس داخل محدوده آسیب
+# ===========================
 inside = []
 
-# حالت manual: کاربر polygon بکشد
-if damage_input_method == "ترسیم دستی روی نقشه" and map_data and map_data.get("all_drawings"):
-
-    polys = [
-        Polygon(d["geometry"]["coordinates"][0])
-        for d in map_data["all_drawings"]
-        if d["geometry"]["type"] == "Polygon"
-    ]
-
-    if polys:
-        multi_poly = unary_union(polys)
-
-        inside = [
-            row for _, row in filtered_df.iterrows()
-            if multi_poly.contains(Point(row["طول_جغرافیایی"], row["عرض_جغرافیایی"]))
-        ]
-
-# حالت GIS upload
 if damage_polygons is not None:
     inside = [
         row for _, row in filtered_df.iterrows()
         if damage_polygons.contains(Point(row["طول_جغرافیایی"], row["عرض_جغرافیایی"]))
     ]
 
-# نمایش خروجی
+elif damage_input_method == "ترسیم دستی روی نقشه" and map_data.get("all_drawings"):
+    polys = [
+        Polygon(d["geometry"]["coordinates"][0])
+        for d in map_data["all_drawings"]
+        if d["geometry"]["type"] == "Polygon"
+    ]
+    if polys:
+        multi_poly = unary_union(polys)
+        inside = [
+            row for _, row in filtered_df.iterrows()
+            if multi_poly.contains(Point(row["طول_جغرافیایی"], row["عرض_جغرافیایی"]))
+        ]
+
+
+# ===========================
+# 8) نمایش نتایج و خروجی CSV
+# ===========================
 if inside:
     result = pd.DataFrame(inside)
 
-    st.success(f"✅ مدارس داخل محدوده آسیب: {len(result)}")
+    st.success(f"✅ تعداد مدارس داخل محدوده آسیب: {len(result)}")
 
     st.dataframe(
         result[["نام_مدرسه", "دسته_مقطع", "جنسیت", "تعداد_دانش_آموز", "تعداد_معلم"]],
@@ -242,7 +217,7 @@ if inside:
     )
 
     csv = result.to_csv(index=False, encoding="utf-8-sig").encode()
-    st.download_button("دانلود CSV", csv, "damaged_schools.csv", "text/csv")
+    st.download_button("دانلود لیست مدارس آسیب دیده (CSV)", csv, "damaged_schools.csv", "text/csv")
 
 else:
     st.warning("هیچ مدرسه‌ای داخل محدوده آسیب یافت نشد.")

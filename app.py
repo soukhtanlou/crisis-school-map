@@ -7,16 +7,15 @@ from shapely.ops import unary_union
 import requests
 import os
 import json 
-import io 
 import numpy as np
 
 # تنظیمات صفحه
 st.set_page_config(page_title="ارزیابی خسارت مدارس", layout="wide")
-st.title("ارزیابی خسارت مدارس در بحران")
+st.title("ارزیابی خسارت مدارس و زیرساخت‌ها در بحران")
 
 # --- ۱. بارگذاری و آماده‌سازی داده‌های مدارس ---
 
-# ایجاد یک فایل dummy برای اجرای اولیه در محیط‌های بدون دسترسی به فایل سیستم محلی (اگر schools.csv وجود نداشته باشد)
+# ایجاد یک فایل dummy برای اجرای اولیه
 if not os.path.exists("schools.csv"):
     try:
         data = {
@@ -27,7 +26,6 @@ if not os.path.exists("schools.csv"):
             'تعداد_دانش_آموز': [415, 490, 280, 350, 520, 150, 0, 390, 470, 330],
             'تعداد_معلم': [29, 31, 30, 24, 34, 12, 18, 26, 30, 23],
             'جنسیت': ['مختلط', 'پسرانه', 'مختلط', 'دخترانه', 'پسرانه', 'دخترانه', 'مختلط', 'پسرانه', 'دخترانه', 'مختلط'],
-            # مختصات‌های نزدیک گلستان برای تطبیق با GeoJSON
             'عرض_جغرافیایی': [37.3321, 37.3105, 37.2889, 37.3450, 37.2995, 37.3012, 37.3208, 37.3155, 37.2770, 37.3050],
             'طول_جغرافیایی': [54.5103, 54.4552, 54.5408, 54.4901, 54.4253, 54.5005, 54.4852, 54.5303, 54.4601, 54.4050]
         }
@@ -43,19 +41,15 @@ if not os.path.exists("schools.csv"):
 def load_data():
     """بارگذاری، پاکسازی و دسته‌بندی داده‌ها با کشینگ."""
     try:
-        # استفاده از encoding="utf-8-sig" برای سازگاری با فایل‌های تولید شده توسط Excel
         df = pd.read_csv("schools.csv", encoding="utf-8-sig")
         
-        # تبدیل به عدد و پر کردن مقادیر خالی با 0
         df['عرض_جغرافیایی'] = pd.to_numeric(df['عرض_جغرافیایی'], errors='coerce')
         df['طول_جغرافیایی'] = pd.to_numeric(df['طول_جغرافیایی'], errors='coerce')
         df['تعداد_دانش_آموز'] = pd.to_numeric(df['تعداد_دانش_آموز'], errors='coerce').fillna(0).astype(int)
         df['تعداد_معلم'] = pd.to_numeric(df['تعداد_معلم'], errors='coerce').fillna(0).astype(int)
         
-        # حذف سطرهای بدون مختصات جغرافیایی معتبر
         df = df.dropna(subset=['عرض_جغرافیایی', 'طول_جغرافیایی'])
         
-        # --- تابع دسته‌بندی مقاطع برای رنگ بندی ---
         def categorize_grade(grade):
             grade = str(grade)
             if 'دبستان' in grade or 'پیش دبستانی' in grade:
@@ -81,20 +75,15 @@ if df.empty:
 
 # --- ۲. فیلترهای جانبی و آپلود GeoJSON ---
 
-st.sidebar.header("تنظیمات فیلتر")
+st.sidebar.header("تنظیمات فیلتر مدارس")
 
 grade_categories = df['دسته_مقطع'].unique()
 selected_categories = st.sidebar.multiselect(
-    "فیلتر بر اساس دسته مقطع تحصیلی:",
-    options=grade_categories,
-    default=grade_categories
+    "فیلتر بر اساس دسته مقطع تحصیلی:", options=grade_categories, default=grade_categories
 )
-
 genders = df['جنسیت'].unique()
 selected_genders = st.sidebar.multiselect(
-    "فیلتر بر اساس جنسیت:",
-    options=genders,
-    default=genders
+    "فیلتر بر اساس جنسیت:", options=genders, default=genders
 )
 
 filtered_df = df[
@@ -102,24 +91,28 @@ filtered_df = df[
     df['جنسیت'].isin(selected_genders)
 ].copy()
 
-# --- آپلود GeoJSON برای محدوده آسیب (اصلاح شده) ---
+# --- آپلود GeoJSON (استفاده از Session State برای پایداری داده) ---
 st.sidebar.markdown("---")
 st.sidebar.header("تعیین محدوده آسیب (GeoJSON)")
 geojson_file = st.sidebar.file_uploader(
-    "آپلود فایل GeoJSON (Polygon/MultiPolygon)",
-    type=["geojson", "json"],
+    "آپلود فایل GeoJSON (Polygon/MultiPolygon)", type=["geojson", "json"],
     help="برای مشخص کردن محدوده آسیب‌دیده از طریق فایل."
 )
 
-uploaded_geojson_data = None
-if geojson_file:
-    # *** رفع خطای "I/O operation on closed file" با خواندن مستقیم JSON ***
+if 'uploaded_geojson_data' not in st.session_state:
+    st.session_state.uploaded_geojson_data = None
+
+# منطق بارگذاری/خالی کردن GeoJSON
+if geojson_file is not None and st.session_state.uploaded_geojson_data is None:
     try:
-        uploaded_geojson_data = json.load(geojson_file)
+        st.session_state.uploaded_geojson_data = json.load(geojson_file)
         st.sidebar.success("فایل GeoJSON با موفقیت بارگذاری شد.")
     except Exception as e:
         st.sidebar.error(f"خطا در خواندن محتوای GeoJSON: {e}")
-        uploaded_geojson_data = None
+        st.session_state.uploaded_geojson_data = None
+elif geojson_file is None:
+    st.session_state.uploaded_geojson_data = None
+
 
 if filtered_df.empty:
     st.warning("با تنظیمات فیلتر فعلی، هیچ مدرسه معتبری برای نمایش وجود ندارد.")
@@ -130,7 +123,6 @@ st.info(f"تعداد کل مدارس نمایش داده شده: **{len(filtered
 
 # --- ۳. ساخت نقشه فولیم (Folium Map) ---
 
-# تنظیمات اولیه نقشه
 if 'initial_map_location' not in st.session_state:
     st.session_state.initial_map_location = [df['عرض_جغرافیایی'].mean(), df['طول_جغرافیایی'].mean()] 
     st.session_state.initial_map_zoom = 11
@@ -141,23 +133,18 @@ m = folium.Map(
     tiles="OpenStreetMap"
 )
 
-# تعریف رنگ‌ها بر اساس دسته مقطع
 category_colors = {
-    'ابتدایی/دبستان': '#28a745',       # سبز
-    'متوسطه': '#007bff',              # آبی
-    'فنی و حرفه‌ای': '#ffc107',       # زرد/نارنجی
-    'مراکز/سایر': '#dc3545',          # قرمز 
+    'ابتدایی/دبستان': '#28a745', 'متوسطه': '#007bff', 
+    'فنی و حرفه‌ای': '#ffc107', 'مراکز/سایر': '#dc3545', 
 }
 
-# --- اضافه کردن لایه مدارس به نقشه ---
+# اضافه کردن لایه مدارس
 school_layer_group = folium.FeatureGroup(name="نقاط مدارس (بر اساس فیلتر)", show=True).add_to(m)
 
 for _, row in filtered_df.iterrows():
     lat, lon = row['عرض_جغرافیایی'], row['طول_جغرافیایی']
     category = row['دسته_مقطع']
-    
-    color = category_colors.get(category, '#6c757d') # رنگ خاکستری برای نامشخص
-    
+    color = category_colors.get(category, '#6c757d')
     tooltip = (
         f"<b>{row.get('نام_مدرسه', 'نامشخص')}</b><br>"
         f"مقطع: **{row.get('مقطع_تحصیلی', 'نامشخص')}**<br>"
@@ -165,41 +152,24 @@ for _, row in filtered_df.iterrows():
     )
     
     folium.CircleMarker(
-        location=[lat, lon],
-        radius=7,
-        color=color,
-        fill=True,
-        fillColor=color,
+        location=[lat, lon], radius=7, color=color, fill=True, fillColor=color, 
         tooltip=folium.Tooltip(tooltip, sticky=True),
     ).add_to(school_layer_group)
 
 
 # --- اضافه کردن GeoJSON آپلود شده به نقشه ---
-if uploaded_geojson_data:
+if st.session_state.uploaded_geojson_data:
     folium.GeoJson(
-        uploaded_geojson_data,
+        st.session_state.uploaded_geojson_data,
         name='محدوده آسیب (GeoJSON)',
-        style_function=lambda x: {
-            'fillColor': '#dc3545', 
-            'color': '#dc3545',
-            'weight': 3, 
-            'fillOpacity': 0.3
-        },
+        style_function=lambda x: {'fillColor': '#dc3545', 'color': '#dc3545', 'weight': 3, 'fillOpacity': 0.3},
         tooltip=folium.Tooltip("محدوده آسیب بارگذاری شده از GeoJSON"),
-        popup=folium.Popup("این محدوده توسط فایل GeoJSON مشخص شده است.")
     ).add_to(m)
 
 
 # --- ابزار ترسیم (Draw Plugin) ---
 from folium.plugins import Draw
-Draw(
-    draw_options={
-        'polyline':False,
-        'rectangle':False,
-        'circle':False,
-        'marker':False,
-        'circlemarker':False,
-    }, 
+Draw(draw_options={'polyline':False, 'rectangle':False, 'circle':False, 'marker':False, 'circlemarker':False,}, 
     edit_options={'edit':True, 'remove':True}
 ).add_to(m)
 
@@ -236,85 +206,178 @@ if go and search:
         st.session_state.initial_map_location = [lat, lon]
         st.session_state.initial_map_zoom = 13
         st.success(f"نقشه به: {name} جابجا شد.")
-        # Streamlit باید کل برنامه را اجرا کند تا نقشه رندر مجدد شود
         st.rerun() 
     else:
         st.error("جستجو نشد یا نتیجه‌ای برای آن مکان یافت نشد.")
 
 st.markdown("### نقشه مدارس و محدوده‌های آسیب")
-
-# نمایش نقشه و دریافت ورودی‌های ترسیم شده
 map_data = st_folium(m, width=1200, height=600, key="folium_map_final")
 
 
-# --- ۵. تحلیل نقاط داخل پلی‌گون‌های ترسیم شده و GeoJSON ---
+# --- ۵. تحلیل نهایی مدارس و عوارض OSM ---
 
 all_shapely_polygons = []
-multi_poly = None
 
-# --- الف: پردازش پلی‌گون‌های دستی ترسیم شده (Manual Drawings) ---
+# --- الف: ترکیب GeoJSON آپلود شده و ترسیم‌های دستی ---
 if map_data and map_data.get("all_drawings"):
     polygons_coords = [
-        drawing["geometry"]["coordinates"][0]
-        for drawing in map_data["all_drawings"]
+        drawing["geometry"]["coordinates"][0] for drawing in map_data["all_drawings"]
         if drawing["geometry"]["type"] == "Polygon"
     ]
-    
     if polygons_coords:
         try:
-            # ایجاد Shapely Polygons از مختصات (Lon, Lat)
             manual_polygons = [Polygon(coords) for coords in polygons_coords]
             all_shapely_polygons.extend(manual_polygons)
         except Exception:
-            st.warning("اشکالی در ایجاد هندسه پلی‌گون‌های دستی وجود دارد. لطفاً شکل‌های ترسیمی را بررسی کنید.")
+            st.warning("اشکالی در ایجاد هندسه پلی‌گون‌های دستی وجود دارد.")
 
-
-# --- ب: پردازش فایل GeoJSON آپلود شده ---
-if uploaded_geojson_data:
-    geojson_data = uploaded_geojson_data
-    
+if st.session_state.uploaded_geojson_data:
+    geojson_data = st.session_state.uploaded_geojson_data
     features = []
-    if geojson_data.get('type') == 'FeatureCollection':
-        features = geojson_data.get('features', [])
-    elif geojson_data.get('type') == 'Feature':
-        features = [geojson_data]
-    elif geojson_data.get('type') in ['Polygon', 'MultiPolygon']:
-        features = [{'geometry': geojson_data}]
+    if geojson_data.get('type') == 'FeatureCollection': features = geojson_data.get('features', [])
+    elif geojson_data.get('type') == 'Feature': features = [geojson_data]
+    elif geojson_data.get('type') in ['Polygon', 'MultiPolygon']: features = [{'geometry': geojson_data}]
         
     for feature in features:
         geometry = feature.get('geometry')
         if geometry:
             try:
-                # استفاده از shape() برای تبدیل GeoJSON به Shapely object
                 geo_obj = shape(geometry)
-                
-                # اگر MultiPolygon بود، هر پلی‌گون را جداگانه به لیست اضافه کن
-                if geo_obj.geom_type == 'MultiPolygon':
-                    for poly in geo_obj.geoms:
-                        all_shapely_polygons.append(poly)
-                # اگر Polygon بود، مستقیم به لیست اضافه کن
-                elif geo_obj.geom_type == 'Polygon':
-                    all_shapely_polygons.append(geo_obj)
-            except Exception as e:
-                st.warning(f"هندسه GeoJSON نامعتبر است یا قابل تحلیل نیست: {e}")
-                continue
+                if geo_obj.geom_type == 'MultiPolygon': all_shapely_polygons.extend(geo_obj.geoms)
+                elif geo_obj.geom_type == 'Polygon': all_shapely_polygons.append(geo_obj)
+            except Exception:
+                st.warning("هندسه GeoJSON نامعتبر است یا قابل تحلیل نیست.")
 
 
-# --- ج: محاسبه مدارس آسیب‌دیده ---
+# --- ب: استخراج Bounding Box از هندسه‌های ترکیب شده ---
+bounding_box = None
 if all_shapely_polygons:
     try:
-        # ادغام تمام پلی‌گون‌ها (دستی و GeoJSON)
         multi_poly = unary_union(all_shapely_polygons)
+        # bounds: (minx, miny, maxx, maxy) => (min_lon, min_lat, max_lon, max_lat)
+        bounds = multi_poly.bounds
+        # Bbox Format: (min_lat, min_lon, max_lat, max_lon) for Overpass
+        bounding_box = f"{bounds[1]},{bounds[0]},{bounds[3]},{bounds[2]}" 
     except Exception as e:
-        st.error(f"خطا در ادغام هندسه‌ها: {e}. اشکال GeoJSON یا ترسیمی را بررسی کنید.")
-        multi_poly = None
+        st.error(f"خطا در ادغام هندسه‌ها: {e}.")
+
+
+# ----------------------------------------------------------------------------------
+# --- تابع جدید: استخراج عوارض از Overpass API ---
+# ----------------------------------------------------------------------------------
+
+# تعریف تگ‌های OSM برای انواع عوارض
+OSM_TAGS = {
+    "جاده‌ها و خیابان‌ها": 'way[highway~"^(primary|secondary|tertiary)$"]',
+    "ساختمان‌ها و ابنیه": 'way[building]',
+    "مراکز بهداشتی/درمانی": 'node[amenity=hospital]; way[amenity=hospital]; node[amenity=clinic]; way[amenity=clinic]',
+    "رودخانه‌ها و آبراه‌ها": 'way[waterway~"^(river|stream|canal)$"]'
+}
+
+@st.cache_data(show_spinner="در حال جستجوی عوارض در محدوده آسیب از OpenStreetMap...")
+def get_osm_features(bbox_str, query_tag, feature_type_name):
+    """
+    استفاده از Overpass API برای جستجوی عوارض مختلف در داخل Bounding Box مشخص شده.
+    """
+    overpass_query = f"""
+        [out:json][timeout:60];
+        (
+            {query_tag}({bbox_str});
+        );
+        out geom;
+    """
+    overpass_url = "http://overpass-api.de/api/interpreter"
+    
+    try:
+        response = requests.post(overpass_url, data=overpass_query)
+        response.raise_for_status() 
+        data = response.json()
+        
+        # تبدیل Overpass JSON به GeoJSON استاندارد برای استفاده راحت‌تر
+        features = []
+        for element in data.get('elements', []):
+            properties = element.get('tags', {})
+            name = properties.get('name', f'نوع: {feature_type_name}')
+            
+            # مشخص کردن نوع هندسه
+            geom_type = element.get('type')
+            
+            if geom_type == 'way' and element.get('geometry'):
+                # LineString یا Polygon
+                coordinates = [[coord['lon'], coord['lat']] for coord in element.get('geometry', [])]
+                geom = {"type": "LineString", "coordinates": coordinates} # LineString پیش‌فرض
+                
+                # اگر building بود، فرض می‌کنیم پلی‌گون است
+                if properties.get('building') or properties.get('waterway') == 'riverbank':
+                     geom["type"] = "Polygon"
+                
+            elif geom_type == 'node':
+                # Point
+                 geom = {"type": "Point", "coordinates": [element['lon'], element['lat']]}
+                 
+            else:
+                continue
+
+            features.append({
+                "نوع عارضه": feature_type_name,
+                "نام": name,
+                "تگ اصلی": properties.get(next(iter(properties)), 'نامشخص'), # اولین تگ برای گزارش
+                "osm_id": element['id']
+            })
+        
+        return features
+        
+    except requests.exceptions.RequestException as e:
+        st.error(f"خطا در ارتباط با Overpass API برای {feature_type_name}: {e}")
+        return None
+    except Exception as e:
+        st.error(f"خطا در پردازش داده‌های {feature_type_name}: {e}")
+        return None
+
+# ----------------------------------------------------------------------------------
+# --- انتخاب عوارض و دکمه تحلیل ---
+# ----------------------------------------------------------------------------------
+st.sidebar.markdown("---")
+st.sidebar.subheader("تحلیل عوارض منطقه")
+
+selected_features_to_analyze = st.sidebar.multiselect(
+    "انتخاب عوارض OSM برای استخراج:",
+    options=list(OSM_TAGS.keys()),
+    default=["جاده‌ها و خیابان‌ها", "مراکز بهداشتی/درمانی"]
+)
+
+analyze_features = st.sidebar.button("استخراج عوارض منطقه آسیب")
+
+if 'osm_features_results' not in st.session_state:
+    st.session_state.osm_features_results = pd.DataFrame()
+
+if analyze_features and bounding_box:
+    all_features = []
+    
+    # فراخوانی تابع برای هر نوع عارضه انتخاب شده
+    for feature_name in selected_features_to_analyze:
+        query_tag = OSM_TAGS[feature_name]
+        results = get_osm_features(bounding_box, query_tag, feature_name)
+        if results:
+            all_features.extend(results)
+            
+    if all_features:
+        st.session_state.osm_features_results = pd.DataFrame(all_features)
+        total_count = len(st.session_state.osm_features_results)
+        st.sidebar.success(f"تعداد کل {total_count} عارضه یافت شد.")
+    else:
+        st.session_state.osm_features_results = pd.DataFrame()
+        st.sidebar.warning("هیچ عارضه‌ای در محدوده‌های انتخابی یافت نشد.")
+
+elif analyze_features and not bounding_box:
+    st.sidebar.warning("لطفاً ابتدا محدوده آسیب را ترسیم کنید یا فایل GeoJSON آپلود نمایید.")
+
+# ----------------------------------------------------------------------------------
+# --- ج: گزارش‌دهی مدارس و عوارض ---
+# ----------------------------------------------------------------------------------
 
 if multi_poly:
-    # تعیین مدارس داخل محدوده
-    inside = []
-    
-    # استفاده از Shapely: Point(Lon, Lat)
-    # اضافه کردن یک ستون موقت برای محاسبه
+    # --- تحلیل مدارس آسیب دیده ---
     filtered_df['is_inside'] = filtered_df.apply(
         lambda row: multi_poly.contains(Point(row["طول_جغرافیایی"], row["عرض_جغرافیایی"])),
         axis=1
@@ -322,34 +385,52 @@ if multi_poly:
     
     result = filtered_df[filtered_df['is_inside'] == True].copy()
     
+    st.markdown("---")
+    
     if not result.empty:
-        
-        # --- گزارش خلاصه کلی ---
         total_schools = len(result)
         total_students = result['تعداد_دانش_آموز'].sum()
         total_teachers = result['تعداد_معلم'].sum()
         
-        st.markdown("---")
         st.success(f"تعداد مدارس آسیب‌دیده در محدوده‌های انتخابی: **{total_schools}**")
         st.info(f"جمع کل دانش‌آموزان: **{total_students}** نفر | جمع کل معلمان: **{total_teachers}** نفر")
         
         st.markdown("### گزارش تفصیلی محدوده‌های آسیب‌دیده")
-
         col_report1, col_report2 = st.columns(2)
 
         with col_report1:
             st.subheader("تعداد مدارس به تفکیک مقطع")
             category_counts = result.groupby('دسته_مقطع').size().reset_index(name='تعداد مدارس')
-            category_counts.columns = ['دسته مقطع', 'تعداد مدارس']
             st.dataframe(category_counts, use_container_width=True, hide_index=True)
 
         with col_report2:
             st.subheader("تعداد دانش‌آموزان به تفکیک جنسیت")
             gender_student_counts = result.groupby('جنسیت')['تعداد_دانش_آموز'].sum().reset_index(name='تعداد دانش‌آموز')
-            gender_student_counts.columns = ['جنسیت', 'تعداد دانش‌آموز']
             st.dataframe(gender_student_counts, use_container_width=True, hide_index=True)
         
         st.markdown("---")
+
+        # --- نمایش لیست عوارض OSM (جدید) ---
+        if not st.session_state.osm_features_results.empty:
+            st.subheader("لیست عوارض زیرساختی در محدوده آسیب")
+            
+            # نمایش خلاصه به تفکیک نوع عارضه
+            feature_summary = st.session_state.osm_features_results.groupby('نوع عارضه').size().reset_index(name='تعداد')
+            st.dataframe(feature_summary, use_container_width=True, hide_index=True)
+            
+            # نمایش جدول کامل
+            st.markdown("#### جزئیات عوارض استخراج شده")
+            st.dataframe(
+                st.session_state.osm_features_results.drop(columns=['osm_id']), 
+                width='stretch', 
+                hide_index=True
+            )
+            
+            csv_osm = st.session_state.osm_features_results.to_csv(index=False, encoding="utf-8-sig").encode('utf-8-sig')
+            st.download_button(
+                "دانلود لیست عوارض (CSV)", csv_osm, "عوارض_آسیب_دیده_OSM.csv", "text/csv;charset=utf-8-sig"
+            )
+            
         st.subheader("لیست مدارس آسیب‌دیده")
         st.dataframe(
             result[["نام_مدرسه", "دسته_مقطع", "تعداد_دانش_آموز", "تعداد_معلم", "جنسیت", "عرض_جغرافیایی", "طول_جغرافیایی"]],
@@ -358,10 +439,7 @@ if multi_poly:
         )
         csv = result.to_csv(index=False, encoding="utf-8-sig").encode('utf-8-sig')
         st.download_button(
-            "دانلود لیست (CSV)", 
-            csv, 
-            "مدارس_آسیب_دیده.csv", 
-            "text/csv;charset=utf-8-sig"
+            "دانلود لیست مدارس (CSV)", csv, "مدارس_آسیب_دیده.csv", "text/csv;charset=utf-8-sig"
         )
     else:
         st.warning("هیچ مدرسه‌ای در محدوده‌های انتخابی (دستی یا GeoJSON) یافت نشد.")

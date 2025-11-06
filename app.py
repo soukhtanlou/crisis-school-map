@@ -27,7 +27,7 @@ def load_data():
 
         df = df.dropna(subset=["عرض_جغرافیایی", "طول_جغرافیایی"])
         
-        # 🚨 اصلاح خطای برنامه نویسی: 'عرض_گرافیایی' به 'عرض_جغرافیایی' تغییر کرد
+        # 🟢 اصلاح خطای نام ستون: استفاده از 'عرض_جغرافیایی'
         df["عرض_جغرافیایی"] = pd.to_numeric(df["عرض_جغرافیایی"], errors="coerce") 
         df["طول_جغرافیایی"] = pd.to_numeric(df["طول_جغرافیایی"], errors="coerce")
         
@@ -225,6 +225,7 @@ inside = []
 if damage_polygons is not None:
     inside = [
         row for _, row in filtered_df.iterrows()
+        # Shapely از ترتیب (Lon, Lat) استفاده می‌کند: Point(طول_جغرافیایی, عرض_جغرافیایی)
         if damage_polygons.contains(Point(row["طول_جغرافیایی"], row["عرض_جغرافیایی"]))
     ]
 
@@ -261,12 +262,14 @@ if inside:
         st.subheader("تعداد مدارس به تفکیک مقطع")
         category_counts = result.groupby('دسته_مقطع').size().reset_index(name='تعداد مدارس')
         category_counts.columns = ['دسته مقطع', 'تعداد مدارس']
+        # ⚠️ جایگزینی use_container_width=True با width='stretch'
         st.dataframe(category_counts, width='stretch', hide_index=True)
 
     with col_report2:
         st.subheader("تعداد دانش‌آموزان به تفکیک جنسیت")
         gender_student_counts = result.groupby('جنسیت')['تعداد_دانش_آموز'].sum().reset_index(name='تعداد دانش‌آموز')
         gender_student_counts.columns = ['جنسیت', 'تعداد دانش‌آموز']
+        # ⚠️ جایگزینی use_container_width=True با width='stretch'
         st.dataframe(gender_student_counts, width='stretch', hide_index=True)
     
     st.markdown("---")

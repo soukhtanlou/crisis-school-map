@@ -3,67 +3,75 @@ import pandas as pd
 import folium
 from streamlit_folium import st_folium
 from shapely.geometry import Polygon, Point
-from shapely.ops import unary_union # اضافه شده برای مدیریت چند پلی‌گون
+from shapely.ops import unary_union
 import requests
 import os
+
+# --- GIS imports ---
+import geopandas as gpd
+import tempfile
+import zipfile
+
 
 st.set_page_config(page_title="ارزیابی خسارت مدارس", layout="wide")
 st.title("ارزیابی خسارت مدارس در بحران")
 
-# --- چک کردن فایل و بارگذاری داده‌ها ---
+# ===========================
+# 1) بارگذاری داده مدارس
+# ===========================
 
 if not os.path.exists("schools.csv"):
-    st.error("فایل `schools.csv` در ریشه ریپازیتوری پیدا نشد!")
+    st.error("فایل `schools.csv` در ریشه ریپازیتوری پیدا نشد.")
     st.stop()
 
 @st.cache_data
 def load_data():
-    """بارگذاری، پاکسازی و دسته‌بندی داده‌ها با کشینگ."""
-    try:
-        df = pd.read_csv("schools.csv", encoding="utf-8-sig")
-        df = df.dropna(subset=['عرض_جغرافیایی', 'طول_جغرافیایی'])
-        df['عرض_جغرافیایی'] = pd.to_numeric(df['عرض_جغرافیایی'], errors='coerce')
-        df['طول_جغرافیایی'] = pd.to_numeric(df['طول_جغرافیایی'], errors='coerce')
-        df['تعداد_دانش_آموز'] = pd.to_numeric(df['تعداد_دانش_آموز'], errors='coerce').fillna(0).astype(int)
-        df['تعداد_معلم'] = pd.to_numeric(df['تعداد_معلم'], errors='coerce').fillna(0).astype(int)
-        df = df.dropna(subset=['عرض_جغرافیایی', 'طول_جغرافیایی'])
-        
-        # --- تابع دسته‌بندی مقاطع برای رنگ بندی ---
-        def categorize_grade(grade):
-            if 'دبستان' in grade or 'پیش دبستانی' in grade:
-                return 'ابتدایی/دبستان'
-            elif 'متوسطه' in grade:
-                return 'متوسطه'
-            elif 'فنی و حرفه‌ای' in grade:
-                return 'فنی و حرفه‌ای'
-            elif 'مراکز' in grade:
-                return 'مراکز/سایر'
-            else:
-                return 'نامشخص'
+    df = pd.read_csv("schools.csv", encoding="utf-8-sig")
 
-        df['دسته_مقطع'] = df['مقطع_تحصیلی'].apply(categorize_grade)
-        return df
-    except Exception as e:
-        st.error(f"خطا در خواندن فایل: {e}")
-        return pd.DataFrame()
+    df = df.dropna(subset=["عرض_جغرافیایی", "طول_جغرافیایی"])
+    df["عرض_جغرافیایی"] = pd.to_numeric(df["عرض_جغرافیایی"], errors="coerce")
+    df["طول_جغرافیایی"] = pd.to_numeric(df["طول_جغرافیایی"], errors="coerce")
+    df["تعداد_دانش_آموز"] = pd.to_numeric(df["تعداد_دانش_آموز"], errors="coerce").fillna(0).astype(int)
+    df["تعداد_معلم"] = pd.to_numeric(df["تعداد_معلم"], errors="coerce").fillna(0).astype(int)
+
+    def categorize_grade(grade):
+        if "دبستان" in grade or "پیش دبستانی" in grade:
+            return "ابتدایی/دبستان"
+        elif "متوسطه" in grade:
+            return "متوسطه"
+        elif "فنی و حرفه‌ای" in grade:
+            return "فنی و حرفه‌ای"
+        elif "مراکز" in grade:
+            return "مراکز/سایر"
+        else:
+            return "نامشخص"
+
+    df["دسته_مقطع"] = df["مقطع_تحصیلی"].apply(categorize_grade)
+    return df
+
 
 df = load_data()
-if df.empty:
-    st.warning("هیچ داده معتبری در فایل نیست.")
-    st.stop()
+st.info(f"تعداد مدارس دارای مختصات معتبر: **{len(df)}**")
 
-# --- ۱. فیلترهای جانبی (Sidebar) ---
+# ===========================
+# 2) Sidebar فیلتر‌ها + انتخاب نوع محدوده آسیب
+# ===========================
 
-st.sidebar.header("تنظیمات فیلتر")
+st.sidebar.header("تنظیمات")
 
-grade_categories = df['دسته_مقطع'].unique()
+damage_input_method = st.sidebar.radio(
+    "روش تعیین محدوده خسارت:",
+    ("ترسیم دستی روی نقشه", "آپلود فایل GIS (SHP/GeoJSON/GPkg)")
+)
+
+grade_categories = df["دسته_مقطع"].unique()
 selected_categories = st.sidebar.multiselect(
-    "فیلتر بر اساس دسته مقطع تحصیلی:",
+    "فیلتر بر اساس مقطع:",
     options=grade_categories,
     default=grade_categories
 )
 
-genders = df['جنسیت'].unique()
+genders = df["جنسیت"].unique()
 selected_genders = st.sidebar.multiselect(
     "فیلتر بر اساس جنسیت:",
     options=genders,
@@ -71,185 +79,170 @@ selected_genders = st.sidebar.multiselect(
 )
 
 filtered_df = df[
-    df['دسته_مقطع'].isin(selected_categories) &
-    df['جنسیت'].isin(selected_genders)
-].copy()
+    df["دسته_مقطع"].isin(selected_categories) &
+    df["جنسیت"].isin(selected_genders)
+]
 
-if filtered_df.empty:
-    st.warning("با تنظیمات فیلتر فعلی، هیچ مدرسه معتبری برای نمایش وجود ندارد.")
-    st.stop()
+# ===========================
+# 3) نقشه
+# ===========================
 
-st.info(f"تعداد کل مدارس نمایش داده شده: **{len(filtered_df)}** از **{len(df)}**")
-
-# --- ۲. نقشه و لایه بندی ---
-
-if 'initial_map_location' not in st.session_state:
-     st.session_state.initial_map_location = [35.6892, 51.3890]
-     st.session_state.initial_map_zoom = 11
+if "initial_map_location" not in st.session_state:
+    st.session_state.initial_map_location = [35.6892, 51.3890]
+    st.session_state.initial_map_zoom = 11
 
 m = folium.Map(
-    location=st.session_state.initial_map_location, 
-    zoom_start=st.session_state.initial_map_zoom, 
+    location=st.session_state.initial_map_location,
+    zoom_start=st.session_state.initial_map_zoom,
     tiles="OpenStreetMap"
 )
 
+# رنگ‌ها
 category_colors = {
-    'ابتدایی/دبستان': '#28a745',    # سبز
-    'متوسطه': '#007bff',            # آبی
-    'فنی و حرفه‌ای': '#ffc107',     # زرد/نارنجی
-    'مراکز/سایر': '#dc3545',        # قرمز 
-    'نامشخص': '#6c757d'             # خاکستری
+    "ابتدایی/دبستان": "#28a745",
+    "متوسطه": "#007bff",
+    "فنی و حرفه‌ای": "#ffc107",
+    "مراکز/سایر": "#dc3545",
+    "نامشخص": "#6c757d",
 }
 
+# لایه بندی دسته‌ها
 category_groups = {}
 for category in grade_categories:
-    color = category_colors.get(category, '#6c757d') 
-    group = folium.FeatureGroup(name=f"دسته: {category}", show=True)
-    category_groups[category] = {'group': group, 'color': color}
-    group.add_to(m)
+    color = category_colors.get(category, "#6c757d")
+    layer = folium.FeatureGroup(name=f"دسته: {category}", show=True)
+    category_groups[category] = {"layer": layer, "color": color}
+    m.add_child(layer)
 
-
+# نمایش مدارس روی نقشه
 for _, row in filtered_df.iterrows():
-    lat, lon = row['عرض_جغرافیایی'], row['طول_جغرافیایی']
-    category = row['دسته_مقطع']
-    
-    group_data = category_groups.get(category)
-    if not group_data: 
-         continue
+    lat, lon = row["عرض_جغرافیایی"], row["طول_جغرافیایی"]
+    category = row["دسته_مقطع"]
 
-    group = group_data['group']
-    color = group_data['color']
-    
+    layer = category_groups[category]["layer"]
+    color = category_groups[category]["color"]
+
     tooltip = (
         f"<b>{row['نام_مدرسه']}</b><br>"
-        f"مقطع: **{row['مقطع_تحصیلی']}** ({row['دسته_مقطع']})<br>"
+        f"مقطع: {row['مقطع_تحصیلی']}<br>"
         f"مدیر: {row['نام_مدیر']}<br>"
         f"دانش‌آموز: {row['تعداد_دانش_آموز']}<br>"
-        f"معلم: {row['تعداد_معلم']}"
+        f"معلم: {row['تعداد_معلم']}<br>"
     )
-    
+
     folium.CircleMarker(
         location=[lat, lon],
         radius=7,
         color=color,
         fill=True,
         fillColor=color,
-        tooltip=folium.Tooltip(tooltip, sticky=True),
-        popup=folium.Popup(tooltip.replace("<br>", "\n"), max_width=300)
-    ).add_to(group)
+        tooltip=tooltip,
+    ).add_to(layer)
 
-# ابزار کشیدن (Draw) با فعال بودن ویرایش
+# --------------------------
+# اگر کاربر محدوده را رسم کند (manual)
+# --------------------------
+
 from folium.plugins import Draw
-Draw(
-    draw_options={'polyline':False,'rectangle':False,'circle':False,'marker':False,'circlemarker':False},
-    edit_options={'edit':True, 'remove':True} # ویرایش و حذف فعال است
-).add_to(m)
+
+if damage_input_method == "ترسیم دستی روی نقشه":
+    Draw(
+        draw_options={'polyline':False,'rectangle':False,'circle':False,'marker':False,'circlemarker':False},
+        edit_options={'edit':True,'remove':True}
+    ).add_to(m)
+
+
+# --------------------------
+# اگر کاربر لایه GIS آپلود کند (SHP / GeoJSON / GPkg)
+# --------------------------
+
+damage_polygons = None
+
+if damage_input_method == "آپلود فایل GIS (SHP/GeoJSON/GPkg)":
+    uploaded = st.sidebar.file_uploader("آپلود فایل ZIP یا GeoJSON", type=["zip", "geojson", "gpkg"])
+
+    if uploaded:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            upload_path = os.path.join(tmpdir, uploaded.name)
+
+            with open(upload_path, "wb") as f:
+                f.write(uploaded.getbuffer())
+
+            if uploaded.name.endswith(".zip"):
+                with zipfile.ZipFile(upload_path, "r") as zip_ref:
+                    zip_ref.extractall(tmpdir)
+                gdf = gpd.read_file(tmpdir)
+
+            else:
+                gdf = gpd.read_file(upload_path)
+
+            gdf = gdf.to_crs(epsg=4326)
+            damage_polygons = gdf.geometry.unary_union
+
+            folium.GeoJson(
+                gdf,
+                name="Damage Map",
+                style_function=lambda x: {
+                    "fillColor": "#ff000077",
+                    "color": "#ff0000",
+                    "weight": 2,
+                    "fillOpacity": 0.35
+                }
+            ).add_to(m)
 
 folium.LayerControl().add_to(m)
 
+# ===========================
+# 4) نمایش نقشه
+# ===========================
 
-# --- ۳. جستجوی مکان ---
+st.subheader("نقشه مدارس و محدوده‌های آسیب")
+map_data = st_folium(m, width=1200, height=600, key="main_map")
 
-@st.cache_data(ttl=3600)
-def geocode_search(query):
-    """کش کردن نتایج جستجوی Nominatim."""
-    try:
-        r = requests.get(
-            "https://nominatim.openstreetmap.org/search",
-            params={'q': query, 'format': 'json', 'limit': 1},
-            headers={'User-Agent': 'IranCrisisMap/1.0'}
-        ).json()
-        if r:
-            return float(r[0]["lat"]), float(r[0]["lon"]), r[0]['display_name'].split(',')[0]
-        return None, None, None
-    except Exception:
-        return None, None, None
+# ===========================
+# 5) تحلیل مدارس داخل محدوده آسیب
+# ===========================
 
-col1, col2 = st.columns([3,1])
-with col1:
-    search = st.text_input("جستجوی شهر/منطقه", placeholder="مثلاً: مشهد، شیراز، تجریش")
-with col2:
-    st.markdown("<br>", unsafe_allow_html=True)
-    go = st.button("برو")
+inside = []
 
-if go and search:
-    lat, lon, name = geocode_search(search)
-    if lat and lon:
-        st.session_state.initial_map_location = [lat, lon]
-        st.session_state.initial_map_zoom = 13
-        st.success(f"رفت به: {name}")
-    else:
-        st.error("جستجو نشد یا نتیجه‌ای برای آن مکان یافت نشد.")
+# حالت manual: کاربر polygon بکشد
+if damage_input_method == "ترسیم دستی روی نقشه" and map_data and map_data.get("all_drawings"):
 
-st.markdown("### نقشه مدارس (ماوس روی نقاط → مشخصات و ابزار ترسیم)")
-map_data = st_folium(m, width=1200, height=600, key="folium_map")
-
-# --- ۴. تحلیل تمامی پلی‌گون‌های ترسیم شده و نمایش گزارش تفصیلی ---
-
-if map_data and map_data.get("all_drawings"):
-    all_drawings = map_data["all_drawings"]
-    
-    # فیلتر کردن تنها پلی‌گون‌ها
-    polygons_coords = [
-        drawing["geometry"]["coordinates"][0]
-        for drawing in all_drawings
-        if drawing["geometry"]["type"] == "Polygon"
+    polys = [
+        Polygon(d["geometry"]["coordinates"][0])
+        for d in map_data["all_drawings"]
+        if d["geometry"]["type"] == "Polygon"
     ]
-    
-    if polygons_coords:
-        try:
-            shapely_polygons = [Polygon(coords) for coords in polygons_coords]
-            # ادغام تمام پلی‌گون‌ها برای پشتیبانی از چندین محدوده مجزا
-            multi_poly = unary_union(shapely_polygons)
-        except Exception:
-             st.warning("اشکالی در ایجاد هندسه پلی‌گون‌ها وجود دارد. لطفاً شکل‌های ترسیمی را بررسی کنید.")
-             st.stop()
-        
-        # محاسبه نقاط داخل هندسه (MultiPolygon)
+
+    if polys:
+        multi_poly = unary_union(polys)
+
         inside = [
             row for _, row in filtered_df.iterrows()
-            # Shapely از ترتیب (Lon, Lat) استفاده می‌کند: Point(طول_جغرافیایی, عرض_جغرافیایی)
             if multi_poly.contains(Point(row["طول_جغرافیایی"], row["عرض_جغرافیایی"]))
         ]
-        
-        if inside:
-            result = pd.DataFrame(inside)
-            
-            # --- گزارش خلاصه کلی ---
-            total_schools = len(inside)
-            total_students = result['تعداد_دانش_آموز'].sum()
-            total_teachers = result['تعداد_معلم'].sum()
-            
-            st.success(f"مدارس در محدوده‌های انتخابی: **{total_schools}**")
-            st.info(f"جمع کل دانش‌آموزان: **{total_students}** | جمع کل معلمان: **{total_teachers}**")
-            
-            st.markdown("---")
-            st.markdown("### گزارش تفصیلی محدوده‌های آسیب‌دیده")
 
-            col_report1, col_report2 = st.columns(2)
+# حالت GIS upload
+if damage_polygons is not None:
+    inside = [
+        row for _, row in filtered_df.iterrows()
+        if damage_polygons.contains(Point(row["طول_جغرافیایی"], row["عرض_جغرافیایی"]))
+    ]
 
-            with col_report1:
-                st.subheader("تعداد مدارس به تفکیک مقطع")
-                category_counts = result.groupby('دسته_مقطع').size().reset_index(name='تعداد مدارس')
-                category_counts.columns = ['دسته مقطع', 'تعداد مدارس']
-                st.dataframe(category_counts, use_container_width=True, hide_index=True)
+# نمایش خروجی
+if inside:
+    result = pd.DataFrame(inside)
 
-            with col_report2:
-                st.subheader("تعداد دانش‌آموزان به تفکیک جنسیت")
-                gender_student_counts = result.groupby('جنسیت')['تعداد_دانش_آموز'].sum().reset_index(name='تعداد دانش‌آموز')
-                gender_student_counts.columns = ['جنسیت', 'تعداد دانش‌آموز']
-                st.dataframe(gender_student_counts, use_container_width=True, hide_index=True)
-            
-            st.markdown("---")
-            st.subheader("لیست مدارس")
-            st.dataframe(
-                result[["نام_مدرسه", "دسته_مقطع", "تعداد_دانش_آموز", "تعداد_معلم", "جنسیت"]],
-                width='stretch',
-                hide_index=True
-            )
-            csv = result.to_csv(index=False, encoding="utf-8-sig").encode()
-            st.download_button("دانلود لیست (CSV)", csv, "مدارس_آسیب_دیده.csv", "text/csv")
-        else:
-            st.warning("هیچ مدرسه‌ای در محدوده‌های انتخابی نیست.")
-    else:
-        st.warning("لطفاً یک یا چند پلی‌گون روی نقشه ترسیم کنید.")
+    st.success(f"✅ مدارس داخل محدوده آسیب: {len(result)}")
+
+    st.dataframe(
+        result[["نام_مدرسه", "دسته_مقطع", "جنسیت", "تعداد_دانش_آموز", "تعداد_معلم"]],
+        use_container_width=True,
+        hide_index=True
+    )
+
+    csv = result.to_csv(index=False, encoding="utf-8-sig").encode()
+    st.download_button("دانلود CSV", csv, "damaged_schools.csv", "text/csv")
+
+else:
+    st.warning("هیچ مدرسه‌ای داخل محدوده آسیب یافت نشد.")

@@ -2,24 +2,23 @@ import streamlit as st
 import pandas as pd
 import folium
 from streamlit_folium import st_folium
-from shapely.geometry import Polygon, Point, mapping, shape
+from shapely.geometry import Polygon, Point, shape
 from shapely.ops import unary_union
 import requests
 import os
 import json 
 import io 
+import numpy as np
 
 # تنظیمات صفحه
 st.set_page_config(page_title="ارزیابی خسارت مدارس", layout="wide")
 st.title("ارزیابی خسارت مدارس در بحران")
 
-# --- چک کردن فایل و بارگذاری داده‌ها ---
+# --- ۱. بارگذاری و آماده‌سازی داده‌های مدارس ---
 
-# فرض می‌کنیم schools.csv وجود دارد. اگر نه، پیام خطا نمایش داده می‌شود.
+# ایجاد یک فایل dummy برای اجرای اولیه در محیط‌های بدون دسترسی به فایل سیستم محلی (اگر schools.csv وجود نداشته باشد)
 if not os.path.exists("schools.csv"):
-    # ایجاد یک فایل dummy برای اجرای اولیه در محیط‌های بدون دسترسی به فایل سیستم محلی
     try:
-        # استفاده از داده‌های فارسی‌ای که کاربر قبلاً درخواست کرده بود
         data = {
             'کد_مدرسه': [100013, 100014, 100015, 100016, 100017, 100018, 100019, 100020, 100021, 100022],
             'نام_مدرسه': ['دبستان شهدای گمنام', 'متوسطه اندیشه', 'فنی خوارزمی', 'دبستان آزادی', 'متوسطه فردوسی', 'پیش‌دبستانی شکوفه', 'مرکز مشاوران ۱', 'دبستان فجر', 'متوسطه الزهرا', 'دبستان هدف'],
@@ -28,7 +27,7 @@ if not os.path.exists("schools.csv"):
             'تعداد_دانش_آموز': [415, 490, 280, 350, 520, 150, 0, 390, 470, 330],
             'تعداد_معلم': [29, 31, 30, 24, 34, 12, 18, 26, 30, 23],
             'جنسیت': ['مختلط', 'پسرانه', 'مختلط', 'دخترانه', 'پسرانه', 'دخترانه', 'مختلط', 'پسرانه', 'دخترانه', 'مختلط'],
-            # مختصات‌های نزدیک گلستان
+            # مختصات‌های نزدیک گلستان برای تطبیق با GeoJSON
             'عرض_جغرافیایی': [37.3321, 37.3105, 37.2889, 37.3450, 37.2995, 37.3012, 37.3208, 37.3155, 37.2770, 37.3050],
             'طول_جغرافیایی': [54.5103, 54.4552, 54.5408, 54.4901, 54.4253, 54.5005, 54.4852, 54.5303, 54.4601, 54.4050]
         }
@@ -46,38 +45,41 @@ def load_data():
     try:
         # استفاده از encoding="utf-8-sig" برای سازگاری با فایل‌های تولید شده توسط Excel
         df = pd.read_csv("schools.csv", encoding="utf-8-sig")
-        df = df.dropna(subset=['عرض_جغرافیایی', 'طول_جغرافیایی'])
+        
+        # تبدیل به عدد و پر کردن مقادیر خالی با 0
         df['عرض_جغرافیایی'] = pd.to_numeric(df['عرض_جغرافیایی'], errors='coerce')
         df['طول_جغرافیایی'] = pd.to_numeric(df['طول_جغرافیایی'], errors='coerce')
         df['تعداد_دانش_آموز'] = pd.to_numeric(df['تعداد_دانش_آموز'], errors='coerce').fillna(0).astype(int)
         df['تعداد_معلم'] = pd.to_numeric(df['تعداد_معلم'], errors='coerce').fillna(0).astype(int)
+        
+        # حذف سطرهای بدون مختصات جغرافیایی معتبر
         df = df.dropna(subset=['عرض_جغرافیایی', 'طول_جغرافیایی'])
         
         # --- تابع دسته‌بندی مقاطع برای رنگ بندی ---
         def categorize_grade(grade):
+            grade = str(grade)
             if 'دبستان' in grade or 'پیش دبستانی' in grade:
                 return 'ابتدایی/دبستان'
             elif 'متوسطه' in grade:
                 return 'متوسطه'
-            elif 'فنی و حرفه‌ای' in grade:
+            elif 'فنی' in grade or 'کار و دانش' in grade:
                 return 'فنی و حرفه‌ای'
-            elif 'مراکز' in grade:
-                return 'مراکز/سایر'
             else:
-                return 'نامشخص'
+                return 'مراکز/سایر'
 
-        df['دسته_مقطع'] = df['مقطع_تحصیلی'].astype(str).apply(categorize_grade)
+        df['دسته_مقطع'] = df['مقطع_تحصیلی'].apply(categorize_grade)
         return df
     except Exception as e:
-        st.error(f"خطا در خواندن فایل: {e}")
+        st.error(f"خطا در خواندن فایل مدارس: {e}")
         return pd.DataFrame()
 
 df = load_data()
 if df.empty:
-    st.warning("هیچ داده معتبری در فایل نیست.")
+    st.warning("هیچ داده معتبری از مدارس بارگذاری نشد.")
     st.stop()
 
-# --- ۱. فیلترهای جانبی (Sidebar) ---
+
+# --- ۲. فیلترهای جانبی و آپلود GeoJSON ---
 
 st.sidebar.header("تنظیمات فیلتر")
 
@@ -100,7 +102,7 @@ filtered_df = df[
     df['جنسیت'].isin(selected_genders)
 ].copy()
 
-# --- NEW: آپلود GeoJSON برای محدوده آسیب ---
+# --- آپلود GeoJSON برای محدوده آسیب (اصلاح شده) ---
 st.sidebar.markdown("---")
 st.sidebar.header("تعیین محدوده آسیب (GeoJSON)")
 geojson_file = st.sidebar.file_uploader(
@@ -108,8 +110,16 @@ geojson_file = st.sidebar.file_uploader(
     type=["geojson", "json"],
     help="برای مشخص کردن محدوده آسیب‌دیده از طریق فایل."
 )
-st.sidebar.caption("محدوده آسیب می‌تواند همزمان از طریق فایل و ترسیم دستی روی نقشه مشخص شود.")
 
+uploaded_geojson_data = None
+if geojson_file:
+    # *** رفع خطای "I/O operation on closed file" با خواندن مستقیم JSON ***
+    try:
+        uploaded_geojson_data = json.load(geojson_file)
+        st.sidebar.success("فایل GeoJSON با موفقیت بارگذاری شد.")
+    except Exception as e:
+        st.sidebar.error(f"خطا در خواندن محتوای GeoJSON: {e}")
+        uploaded_geojson_data = None
 
 if filtered_df.empty:
     st.warning("با تنظیمات فیلتر فعلی، هیچ مدرسه معتبری برای نمایش وجود ندارد.")
@@ -117,11 +127,12 @@ if filtered_df.empty:
 
 st.info(f"تعداد کل مدارس نمایش داده شده: **{len(filtered_df)}** از **{len(df)}**")
 
-# --- ۲. نقشه و لایه بندی ---
 
+# --- ۳. ساخت نقشه فولیم (Folium Map) ---
+
+# تنظیمات اولیه نقشه
 if 'initial_map_location' not in st.session_state:
-    # تغییر مختصات اولیه به گلستان (گرگان) برای همخوانی با GeoJSON سیل
-    st.session_state.initial_map_location = [37.3000, 54.4600] 
+    st.session_state.initial_map_location = [df['عرض_جغرافیایی'].mean(), df['طول_جغرافیایی'].mean()] 
     st.session_state.initial_map_zoom = 11
 
 m = folium.Map(
@@ -130,30 +141,27 @@ m = folium.Map(
     tiles="OpenStreetMap"
 )
 
+# تعریف رنگ‌ها بر اساس دسته مقطع
 category_colors = {
     'ابتدایی/دبستان': '#28a745',       # سبز
     'متوسطه': '#007bff',              # آبی
     'فنی و حرفه‌ای': '#ffc107',       # زرد/نارنجی
     'مراکز/سایر': '#dc3545',          # قرمز 
-    'نامشخص': '#6c757d'              # خاکستری
 }
 
-# گروه لایه‌های مدارس
-school_layer_group = folium.FeatureGroup(name="نقاط مدارس", show=True).add_to(m)
+# --- اضافه کردن لایه مدارس به نقشه ---
+school_layer_group = folium.FeatureGroup(name="نقاط مدارس (بر اساس فیلتر)", show=True).add_to(m)
 
-# اضافه کردن نقاط مدارس به نقشه
 for _, row in filtered_df.iterrows():
     lat, lon = row['عرض_جغرافیایی'], row['طول_جغرافیایی']
     category = row['دسته_مقطع']
     
-    color = category_colors.get(category, '#6c757d')
+    color = category_colors.get(category, '#6c757d') # رنگ خاکستری برای نامشخص
     
     tooltip = (
-        f"<b>{row['نام_مدرسه']}</b><br>"
-        f"مقطع: **{row['مقطع_تحصیلی']}** ({row['دسته_مقطع']})<br>"
-        f"مدیر: {row['نام_مدیر']}<br>"
-        f"دانش‌آموز: {row['تعداد_دانش_آموز']}<br>"
-        f"معلم: {row['تعداد_معلم']}"
+        f"<b>{row.get('نام_مدرسه', 'نامشخص')}</b><br>"
+        f"مقطع: **{row.get('مقطع_تحصیلی', 'نامشخص')}**<br>"
+        f"دانش‌آموز: {row.get('تعداد_دانش_آموز', 0)} | معلم: {row.get('تعداد_معلم', 0)}"
     )
     
     folium.CircleMarker(
@@ -163,55 +171,26 @@ for _, row in filtered_df.iterrows():
         fill=True,
         fillColor=color,
         tooltip=folium.Tooltip(tooltip, sticky=True),
-        popup=folium.Popup(tooltip.replace("<br>", "\n"), max_width=300)
-    ).add_to(school_layer_group) # اضافه کردن به گروه مدارس
+    ).add_to(school_layer_group)
 
-# ----------------------------------------------------
-# --- نمایش GeoJSON آپلود شده روی نقشه (محل اعمال تغییرات) ---
-# ----------------------------------------------------
 
-uploaded_geojson_data = None
-if geojson_file:
-    # بازگرداندن نشانگر فایل به ابتدای آن برای استفاده مجدد 
-    geojson_file.seek(0)
-    
-    try:
-        # GeoJSON را به صورت متنی می‌خوانیم و بارگذاری می‌کنیم
-        geojson_data_str = io.TextIOWrapper(geojson_file, encoding='utf-8').read()
-        uploaded_geojson_data = json.loads(geojson_data_str)
-        geojson_file.seek(0) # بازگرداندن نشانگر برای استفاده مجدد در بخش تحلیل
-    except Exception as e:
-        st.error(f"خطا در خواندن محتوای GeoJSON: {e}")
-        uploaded_geojson_data = None
-    
-    if uploaded_geojson_data:
-        # **اضافه کردن GeoJSON به نقشه به عنوان یک لایه Folium**
-        folium.GeoJson(
-            uploaded_geojson_data,
-            name='محدوده آسیب (GeoJSON)',
-            style_function=lambda x: {
-                'fillColor': '#dc3545',  # قرمز
-                'color': '#dc3545',
-                'weight': 3, # ضخامت بیشتر برای بهتر دیده شدن
-                'fillOpacity': 0.3
-            }
-        ).add_to(m)
-        
-        # تنظیم مرکز نقشه برای زوم روی محدوده آسیب
-        try:
-            geo_shape_obj = shape(uploaded_geojson_data)
-            if geo_shape_obj.bounds:
-                centroid = geo_shape_obj.centroid
-                st.session_state.initial_map_location = [centroid.y, centroid.x]
-                st.session_state.initial_map_zoom = 11
-                m.location = st.session_state.initial_map_location
-                m.zoom_start = st.session_state.initial_map_zoom
-        except Exception:
-            pass
+# --- اضافه کردن GeoJSON آپلود شده به نقشه ---
+if uploaded_geojson_data:
+    folium.GeoJson(
+        uploaded_geojson_data,
+        name='محدوده آسیب (GeoJSON)',
+        style_function=lambda x: {
+            'fillColor': '#dc3545', 
+            'color': '#dc3545',
+            'weight': 3, 
+            'fillOpacity': 0.3
+        },
+        tooltip=folium.Tooltip("محدوده آسیب بارگذاری شده از GeoJSON"),
+        popup=folium.Popup("این محدوده توسط فایل GeoJSON مشخص شده است.")
+    ).add_to(m)
 
-# ----------------------------------------------------
 
-# ابزار کشیدن (Draw) با فعال بودن ویرایش
+# --- ابزار ترسیم (Draw Plugin) ---
 from folium.plugins import Draw
 Draw(
     draw_options={
@@ -221,22 +200,22 @@ Draw(
         'marker':False,
         'circlemarker':False,
     }, 
-    edit_options={'edit':True, 'remove':True} # ویرایش و حذف فعال است
+    edit_options={'edit':True, 'remove':True}
 ).add_to(m)
 
 folium.LayerControl().add_to(m)
 
 
-# --- ۳. جستجوی مکان (برای جابجایی نقشه) ---
+# --- ۴. جستجوی مکان و نمایش نقشه ---
 
 @st.cache_data(ttl=3600)
 def geocode_search(query):
-    """کش کردن نتایج جستجوی Nominatim."""
+    """جستجوی مختصات با Nominatim."""
     try:
         r = requests.get(
             "https://nominatim.openstreetmap.org/search",
             params={'q': query, 'format': 'json', 'limit': 1},
-            headers={'User-Agent': 'IranCrisisMap/1.0'}
+            headers={'User-Agent': 'SchoolDamageAssessmentTool/1.0'}
         ).json()
         if r:
             return float(r[0]["lat"]), float(r[0]["lon"]), r[0]['display_name'].split(',')[0]
@@ -246,34 +225,35 @@ def geocode_search(query):
 
 col1, col2 = st.columns([3,1])
 with col1:
-    search = st.text_input("جستجوی شهر/منطقه", placeholder="مثلاً: مشهد، شیراز، تجریش")
+    search = st.text_input("جستجوی شهر/منطقه", placeholder="مثلاً: گرگان، تهران، مشهد")
 with col2:
     st.markdown("<br>", unsafe_allow_html=True)
-    go = st.button("برو")
+    go = st.button("برو به مکان")
 
 if go and search:
     lat, lon, name = geocode_search(search)
     if lat and lon:
         st.session_state.initial_map_location = [lat, lon]
         st.session_state.initial_map_zoom = 13
-        st.success(f"رفت به: {name}")
+        st.success(f"نقشه به: {name} جابجا شد.")
+        # Streamlit باید کل برنامه را اجرا کند تا نقشه رندر مجدد شود
+        st.rerun() 
     else:
         st.error("جستجو نشد یا نتیجه‌ای برای آن مکان یافت نشد.")
 
-st.markdown("### نقشه مدارس (ترسیم محدوده آسیب و ابزارها)")
+st.markdown("### نقشه مدارس و محدوده‌های آسیب")
 
-map_data = st_folium(m, width=1200, height=600, key="folium_map_v3") # تغییر کلید برای رندر مجدد نقشه
+# نمایش نقشه و دریافت ورودی‌های ترسیم شده
+map_data = st_folium(m, width=1200, height=600, key="folium_map_final")
 
 
-# --- ۴. تحلیل تمامی پلی‌گون‌های ترسیم شده و GeoJSON آپلود شده ---
+# --- ۵. تحلیل نقاط داخل پلی‌گون‌های ترسیم شده و GeoJSON ---
 
-# لیست برای ذخیره تمام اشیاء Shapely Polygon از هر دو منبع
 all_shapely_polygons = []
+multi_poly = None
 
 # --- الف: پردازش پلی‌گون‌های دستی ترسیم شده (Manual Drawings) ---
 if map_data and map_data.get("all_drawings"):
-    
-    # فیلتر کردن تنها پلی‌گون‌ها از ابزار ترسیم
     polygons_coords = [
         drawing["geometry"]["coordinates"][0]
         for drawing in map_data["all_drawings"]
@@ -289,96 +269,70 @@ if map_data and map_data.get("all_drawings"):
             st.warning("اشکالی در ایجاد هندسه پلی‌گون‌های دستی وجود دارد. لطفاً شکل‌های ترسیمی را بررسی کنید.")
 
 
-# --- ب: پردازش فایل GeoJSON آپلود شده (GeoJSON Upload) ---
-if geojson_file:
-    # از داده‌هایی که در بخش ۲ خوانده و در uploaded_geojson_data ذخیره شد، استفاده می‌کنیم
-    if uploaded_geojson_data:
-        geojson_data = uploaded_geojson_data
+# --- ب: پردازش فایل GeoJSON آپلود شده ---
+if uploaded_geojson_data:
+    geojson_data = uploaded_geojson_data
+    
+    features = []
+    if geojson_data.get('type') == 'FeatureCollection':
+        features = geojson_data.get('features', [])
+    elif geojson_data.get('type') == 'Feature':
+        features = [geojson_data]
+    elif geojson_data.get('type') in ['Polygon', 'MultiPolygon']:
+        features = [{'geometry': geojson_data}]
         
-        # هندل کردن FeatureCollection، Feature، و Geometry
-        features = []
-        if geojson_data.get('type') == 'FeatureCollection':
-            features = geojson_data.get('features', [])
-        elif geojson_data.get('type') == 'Feature':
-            features = [geojson_data]
-        elif geojson_data.get('type') in ['Polygon', 'MultiPolygon']:
-            # اگر خود Geometry object باشد
-            features = [{'geometry': geojson_data}]
-            
-        
-        polygons_from_file_count = 0
-        for feature in features:
-            geometry = feature.get('geometry')
-            if geometry and geometry.get('type') in ['Polygon', 'MultiPolygon']:
+    for feature in features:
+        geometry = feature.get('geometry')
+        if geometry:
+            try:
+                # استفاده از shape() برای تبدیل GeoJSON به Shapely object
+                geo_obj = shape(geometry)
                 
-                # برای Polygon: مختصات یک آرایه از حلقه‌ها است (ما حلقه بیرونی را می‌خواهیم)
-                if geometry['type'] == 'Polygon':
-                    # Polygon coordinates are [exterior_ring, interior_ring1, ...]
-                    coords = geometry['coordinates'][0] # فقط حلقه بیرونی را می‌گیریم
-                    all_shapely_polygons.append(Polygon(coords))
-                    polygons_from_file_count += 1
-                
-                # برای MultiPolygon: آرایه‌ای از مختصات پلی‌گون‌ها است
-                elif geometry['type'] == 'MultiPolygon':
-                    for poly_coords in geometry['coordinates']:
-                        # MultiPolygon coordinates: [[[ext_ring, int_ring, ...], ...], ...]
-                        coords = poly_coords[0] # حلقه بیرونی هر پلی‌گون را می‌گیریم
-                        all_shapely_polygons.append(Polygon(coords))
-                        polygons_from_file_count += 1
-                        
-        
-        if polygons_from_file_count > 0:
-            st.success(f"فایل GeoJSON با موفقیت بارگذاری شد و شامل {polygons_from_file_count} پلی‌گون برای تحلیل است.")
-              
-    else:
-        # اگر GeoJSON آپلود شده ولی خوانده نشده
-        st.error("محتوای GeoJSON معتبر نیست و برای تحلیل قابل استفاده نیست.")
+                # اگر MultiPolygon بود، هر پلی‌گون را جداگانه به لیست اضافه کن
+                if geo_obj.geom_type == 'MultiPolygon':
+                    for poly in geo_obj.geoms:
+                        all_shapely_polygons.append(poly)
+                # اگر Polygon بود، مستقیم به لیست اضافه کن
+                elif geo_obj.geom_type == 'Polygon':
+                    all_shapely_polygons.append(geo_obj)
+            except Exception as e:
+                st.warning(f"هندسه GeoJSON نامعتبر است یا قابل تحلیل نیست: {e}")
+                continue
 
 
-# --- ج: محاسبه و نمایش نتایج نهایی ---
-
+# --- ج: محاسبه مدارس آسیب‌دیده ---
 if all_shapely_polygons:
     try:
-        # ادغام تمام پلی‌گون‌ها (دستی و GeoJSON) برای ایجاد یک هندسه واحد
+        # ادغام تمام پلی‌گون‌ها (دستی و GeoJSON)
         multi_poly = unary_union(all_shapely_polygons)
     except Exception as e:
-        st.warning(f"اشکالی در ایجاد هندسه نهایی (ادغام پلی‌گون‌ها) وجود دارد: {e}. لطفاً شکل‌ها را بررسی کنید.")
-        st.stop()
-        
-    # محاسبه نقاط داخل هندسه (MultiPolygon)
-    inside = []
-    # Shapely از ترتیب (Lon, Lat) استفاده می‌کند: Point(طول_جغرافیایی, عرض_جغرافیایی)
-    for index, row in filtered_df.iterrows():
-        point = Point(row["طول_جغرافیایی"], row["عرض_جغرافیایی"])
-        if multi_poly.contains(point):
-            # اضافه کردن یک ستون جدید برای مشخص کردن مدارس آسیب دیده
-            row['آسیب_دیده'] = True 
-            inside.append(row)
-        else:
-            row['آسیب_دیده'] = False
+        st.error(f"خطا در ادغام هندسه‌ها: {e}. اشکال GeoJSON یا ترسیمی را بررسی کنید.")
+        multi_poly = None
 
-    # برای نمایش مدارس روی نقشه بعد از تحلیل، dataframe اصلی را به روز می‌کنیم
-    # این قسمت در حال حاضر فقط برای پر کردن ستون 'آسیب_دیده' است که در تحلیل نهایی استفاده نشد
-    # اما اگر لازم باشد، می‌توان برای فیلتر یا رنگ‌آمیزی دوباره مدارس استفاده کرد.
-    filtered_df['آسیب_دیده'] = filtered_df.apply(
-        lambda row: multi_poly.contains(Point(row["طول_جغرافیایی"], row["عرض_جغرافیایی"])) 
-        if multi_poly else False, 
+if multi_poly:
+    # تعیین مدارس داخل محدوده
+    inside = []
+    
+    # استفاده از Shapely: Point(Lon, Lat)
+    # اضافه کردن یک ستون موقت برای محاسبه
+    filtered_df['is_inside'] = filtered_df.apply(
+        lambda row: multi_poly.contains(Point(row["طول_جغرافیایی"], row["عرض_جغرافیایی"])),
         axis=1
     )
-
-
-    if inside:
-        result = pd.DataFrame(inside)
+    
+    result = filtered_df[filtered_df['is_inside'] == True].copy()
+    
+    if not result.empty:
         
         # --- گزارش خلاصه کلی ---
-        total_schools = len(inside)
+        total_schools = len(result)
         total_students = result['تعداد_دانش_آموز'].sum()
         total_teachers = result['تعداد_معلم'].sum()
         
-        st.success(f"مدارس در محدوده‌های انتخابی: **{total_schools}**")
-        st.info(f"جمع کل دانش‌آموزان: **{total_students}** | جمع کل معلمان: **{total_teachers}**")
-        
         st.markdown("---")
+        st.success(f"تعداد مدارس آسیب‌دیده در محدوده‌های انتخابی: **{total_schools}**")
+        st.info(f"جمع کل دانش‌آموزان: **{total_students}** نفر | جمع کل معلمان: **{total_teachers}** نفر")
+        
         st.markdown("### گزارش تفصیلی محدوده‌های آسیب‌دیده")
 
         col_report1, col_report2 = st.columns(2)
@@ -402,9 +356,14 @@ if all_shapely_polygons:
             width='stretch',
             hide_index=True
         )
-        csv = result.to_csv(index=False, encoding="utf-8-sig").encode()
-        st.download_button("دانلود لیست (CSV)", csv, "مدارس_آسیب_دیده.csv", "text/csv")
+        csv = result.to_csv(index=False, encoding="utf-8-sig").encode('utf-8-sig')
+        st.download_button(
+            "دانلود لیست (CSV)", 
+            csv, 
+            "مدارس_آسیب_دیده.csv", 
+            "text/csv;charset=utf-8-sig"
+        )
     else:
-        st.warning("هیچ مدرسه‌ای در محدوده‌های انتخابی (اعم از دستی یا GeoJSON) نیست.")
+        st.warning("هیچ مدرسه‌ای در محدوده‌های انتخابی (دستی یا GeoJSON) یافت نشد.")
 else:
-    st.warning("لطفاً یک یا چند پلی‌گون روی نقشه ترسیم کنید یا فایل GeoJSON آپلود نمایید.")
+    st.warning("لطفاً محدوده آسیب را روی نقشه ترسیم کنید یا فایل GeoJSON معتبری آپلود نمایید.")

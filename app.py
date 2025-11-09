@@ -18,7 +18,7 @@ st.title("ارزیابی خسارت مدارس در بحران")
 
 # تعریف متغیرهای وضعیت (Session State) برای مدیریت وضعیت نقشه
 if 'initial_map_location' not in st.session_state:
-    # اصلاح: تعیین مرکز ایران و زوم مناسب برای نمایش کل کشور به عنوان نمای پیش‌فرض
+    # تعیین مرکز ایران و زوم مناسب برای نمایش کل کشور به عنوان نمای پیش‌فرض
     st.session_state.initial_map_location = [32.5, 53.0]  # مرکز تقریبی ایران
     st.session_state.initial_map_zoom = 5 # زوم کمتر برای نمایش کل کشور
 if 'uploaded_geojson_data' not in st.session_state:
@@ -146,6 +146,7 @@ def reset_app():
 st.sidebar.markdown("---")
 if st.sidebar.button("پاک کردن محدوده‌ها و ریست نقشه"):
     reset_app()
+    # استفاده از st.rerun برای اعمال تغییرات State و بارگذاری مجدد بخش‌های شرطی
     st.rerun()
 
 if filtered_df.empty:
@@ -278,6 +279,7 @@ all_shapely_polygons = []
 multi_poly = None
 
 # --- الف: پردازش پلی‌گون‌های دستی ترسیم شده (Manual Drawings) ---
+drawings_exist = False
 if map_data and map_data.get("all_drawings"):
     polygons_coords = [
         drawing["geometry"]["coordinates"][0]
@@ -286,6 +288,7 @@ if map_data and map_data.get("all_drawings"):
     ]
     
     if polygons_coords:
+        drawings_exist = True
         try:
             # ایجاد Shapely Polygons از مختصات (Lon, Lat)
             manual_polygons = [Polygon(coords) for coords in polygons_coords]
@@ -295,7 +298,10 @@ if map_data and map_data.get("all_drawings"):
 
 
 # --- ب: پردازش فایل GeoJSON آپلود شده ---
+uploaded_geojson_data = st.session_state.uploaded_geojson_data
+geojson_exist = False
 if uploaded_geojson_data:
+    geojson_exist = True
     geojson_data = uploaded_geojson_data
     
     features = []
@@ -322,91 +328,96 @@ if uploaded_geojson_data:
                 continue
 
 
-# --- ج: محاسبه مدارس آسیب‌دیده ---
-if all_shapely_polygons:
-    try:
-        # ادغام تمام پلی‌گون‌ها (دستی و GeoJSON)
-        multi_poly = unary_union(all_shapely_polygons)
-    except Exception as e:
-        st.error(f"خطا در ادغام هندسه‌ها: {e}. اشکال GeoJSON یا ترسیمی را بررسی کنید.")
-        multi_poly = None
+# --- ج: محاسبه مدارس آسیب‌دیده و نمایش گزارش (تنها در صورت وجود محدوده) ---
 
-if multi_poly:
-    # تعیین مدارس داخل محدوده
+# شرط کلیدی برای نمایش گزارش: تنها اگر ترسیم دستی یا GeoJSON آپلود شده‌ای وجود داشته باشد.
+if drawings_exist or geojson_exist:
     
-    # استفاده از Shapely: Point(Lon, Lat)
-    # اضافه کردن یک ستون موقت برای محاسبه
-    filtered_df['is_inside'] = filtered_df.apply(
-        lambda row: multi_poly.contains(Point(row["طول_جغرافیایی"], row["عرض_جغرافیایی"])),
-        axis=1
-    )
-    
-    result = filtered_df[filtered_df['is_inside'] == True].copy()
-    
-    if not result.empty:
-        
-        # --- گزارش خلاصه کلی (اصلاح شده) ---
-        total_schools = len(result)
-        total_students = result['تعداد_دانش_آموز'].sum()
-        total_teachers = result['تعداد_معلم'].sum()
-        
-        st.markdown("---")
-        st.subheader("نتایج تحلیل آسیب‌پذیری")
-        
-        # استفاده از st.metric برای نمایش آمار آسیب‌دیده (رفع مشکل رنگ سبز)
-        col_metric1, col_metric2, col_metric3 = st.columns(3)
-        
-        with col_metric1:
-            st.metric(
-                label="تعداد مدارس آسیب‌دیده", 
-                value=total_schools,
-                delta="🚨 وضعیت خطر",
-                delta_color="off"
-            )
-        with col_metric2:
-            st.metric(
-                label="جمع کل دانش‌آموزان تحت تاثیر", 
-                value=total_students
-            )
-        with col_metric3:
-            st.metric(
-                label="جمع کل معلمان تحت تاثیر", 
-                value=total_teachers
-            )
-        
-        st.warning("⚠️ نتایج بالا صرفاً بر اساس همپوشانی مکانی است و نیاز به تأیید میدانی دارد.")
-        
-        st.markdown("### گزارش تفصیلی محدوده‌های آسیب‌دیده")
+    if all_shapely_polygons:
+        try:
+            # ادغام تمام پلی‌گون‌ها (دستی و GeoJSON)
+            multi_poly = unary_union(all_shapely_polygons)
+        except Exception as e:
+            st.error(f"خطا در ادغام هندسه‌ها: {e}. اشکال GeoJSON یا ترسیمی را بررسی کنید.")
+            multi_poly = None
 
-        col_report1, col_report2 = st.columns(2)
-
-        with col_report1:
-            st.subheader("تعداد مدارس به تفکیک مقطع")
-            category_counts = result.groupby('دسته_مقطع').size().reset_index(name='تعداد مدارس')
-            category_counts.columns = ['دسته مقطع', 'تعداد مدارس']
-            st.dataframe(category_counts, use_container_width=True, hide_index=True)
-
-        with col_report2:
-            st.subheader("تعداد دانش‌آموزان به تفکیک جنسیت")
-            gender_student_counts = result.groupby('جنسیت')['تعداد_دانش_آموز'].sum().reset_index(name='تعداد دانش‌آموز')
-            gender_student_counts.columns = ['جنسیت', 'تعداد دانش‌آموز']
-            st.dataframe(gender_student_counts, use_container_width=True, hide_index=True)
+    if multi_poly:
+        # تعیین مدارس داخل محدوده
+        
+        # استفاده از Shapely: Point(Lon, Lat)
+        # اضافه کردن یک ستون موقت برای محاسبه
+        filtered_df['is_inside'] = filtered_df.apply(
+            lambda row: multi_poly.contains(Point(row["طول_جغرافیایی"], row["عرض_جغرافیایی"])),
+            axis=1
+        )
+        
+        result = filtered_df[filtered_df['is_inside'] == True].copy()
+        
+        if not result.empty:
             
-        st.markdown("---")
-        st.subheader("لیست مدارس آسیب‌دیده")
-        st.dataframe(
-            result[["نام_مدرسه", "دسته_مقطع", "تعداد_دانش_آموز", "تعداد_معلم", "جنسیت", "عرض_جغرافیایی", "طول_جغرافیایی"]],
-            width='stretch',
-            hide_index=True
-        )
-        csv = result.to_csv(index=False, encoding="utf-8-sig").encode('utf-8-sig')
-        st.download_button(
-            "دانلود لیست (CSV)", 
-            csv, 
-            "مدارس_آسیب_دیده.csv", 
-            "text/csv;charset=utf-8-sig"
-        )
+            # --- گزارش خلاصه کلی ---
+            total_schools = len(result)
+            total_students = result['تعداد_دانش_آموز'].sum()
+            total_teachers = result['تعداد_معلم'].sum()
+            
+            st.markdown("---")
+            st.subheader("نتایج تحلیل آسیب‌پذیری")
+            
+            # نمایش آمار آسیب‌دیده
+            col_metric1, col_metric2, col_metric3 = st.columns(3)
+            
+            with col_metric1:
+                st.metric(
+                    label="تعداد مدارس آسیب‌دیده", 
+                    value=total_schools,
+                    delta="🚨 وضعیت خطر",
+                    delta_color="off"
+                )
+            with col_metric2:
+                st.metric(
+                    label="جمع کل دانش‌آموزان تحت تاثیر", 
+                    value=total_students
+                )
+            with col_metric3:
+                st.metric(
+                    label="جمع کل معلمان تحت تاثیر", 
+                    value=total_teachers
+                )
+            
+            st.warning("⚠️ نتایج بالا صرفاً بر اساس همپوشانی مکانی است و نیاز به تأیید میدانی دارد.")
+            
+            st.markdown("### گزارش تفصیلی محدوده‌های آسیب‌دیده")
+
+            col_report1, col_report2 = st.columns(2)
+
+            with col_report1:
+                st.subheader("تعداد مدارس به تفکیک مقطع")
+                category_counts = result.groupby('دسته_مقطع').size().reset_index(name='تعداد مدارس')
+                category_counts.columns = ['دسته مقطع', 'تعداد مدارس']
+                st.dataframe(category_counts, use_container_width=True, hide_index=True)
+
+            with col_report2:
+                st.subheader("تعداد دانش‌آموزان به تفکیک جنسیت")
+                gender_student_counts = result.groupby('جنسیت')['تعداد_دانش_آموز'].sum().reset_index(name='تعداد دانش‌آموز')
+                gender_student_counts.columns = ['جنسیت', 'تعداد دانش‌آموز']
+                st.dataframe(gender_student_counts, use_container_width=True, hide_index=True)
+                
+            st.markdown("---")
+            st.subheader("لیست مدارس آسیب‌دیده")
+            st.dataframe(
+                result[["نام_مدرسه", "دسته_مقطع", "تعداد_دانش_آموز", "تعداد_معلم", "جنسیت", "عرض_جغرافیایی", "طول_جغرافیایی"]],
+                width='stretch',
+                hide_index=True
+            )
+            csv = result.to_csv(index=False, encoding="utf-8-sig").encode('utf-8-sig')
+            st.download_button(
+                "دانلود لیست (CSV)", 
+                csv, 
+                "مدارس_آسیب_دیده.csv", 
+                "text/csv;charset=utf-8-sig"
+            )
+        else:
+            st.warning("هیچ مدرسه‌ای در محدوده‌های انتخابی (دستی یا GeoJSON) یافت نشد.")
     else:
-        st.warning("هیچ مدرسه‌ای در محدوده‌های انتخابی (دستی یا GeoJSON) یافت نشد.")
-else:
-    st.warning("لطفاً محدوده آسیب را روی نقشه ترسیم کنید یا فایل GeoJSON معتبری آپلود نمایید.")
+        st.warning("لطفاً محدوده آسیب را روی نقشه ترسیم کنید یا فایل GeoJSON معتبری آپلود نمایید.")
+```eof

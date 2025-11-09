@@ -6,19 +6,34 @@ from shapely.geometry import Polygon, Point, shape
 from shapely.ops import unary_union
 import requests
 import os
-import json 
-import io 
+import json 
+import io 
 import numpy as np
+
+# --- 0. Initialization and Setup ---
 
 # تنظیمات صفحه
 st.set_page_config(page_title="ارزیابی خسارت مدارس", layout="wide")
 st.title("ارزیابی خسارت مدارس در بحران")
 
+# تعریف متغیرهای وضعیت (Session State) برای مدیریت وضعیت نقشه
+if 'initial_map_location' not in st.session_state:
+    # تعیین یک نمای کلی بزرگتر (مثلاً مرکز استان گلستان که داده‌های dummy در آن قرار دارند)
+    # برای نمایش کل کشور، می توان از مختصات تهران یا مختصات جنوب شرقی ایران استفاده کرد.
+    # در اینجا برای پوشش دادن داده های dummy از مختصات منطقی در گلستان استفاده می‌کنیم.
+    st.session_state.initial_map_location = [37.0, 54.4] 
+    st.session_state.initial_map_zoom = 9 # زوم کمتر برای نمای کلی تر
+if 'uploaded_geojson_data' not in st.session_state:
+    st.session_state.uploaded_geojson_data = None
+if 'reset_trigger' not in st.session_state:
+    st.session_state.reset_trigger = 0
+
 # --- ۱. بارگذاری و آماده‌سازی داده‌های مدارس ---
 
-# ایجاد یک فایل dummy برای اجرای اولیه در محیط‌های بدون دسترسی به فایل سیستم محلی (اگر schools.csv وجود نداشته باشد)
+# ایجاد یک فایل dummy برای اجرای اولیه
 if not os.path.exists("schools.csv"):
     try:
+        # مختصات‌های نزدیک گلستان برای تطبیق با GeoJSON
         data = {
             'کد_مدرسه': [100013, 100014, 100015, 100016, 100017, 100018, 100019, 100020, 100021, 100022],
             'نام_مدرسه': ['دبستان شهدای گمنام', 'متوسطه اندیشه', 'فنی خوارزمی', 'دبستان آزادی', 'متوسطه فردوسی', 'پیش‌دبستانی شکوفه', 'مرکز مشاوران ۱', 'دبستان فجر', 'متوسطه الزهرا', 'دبستان هدف'],
@@ -27,7 +42,6 @@ if not os.path.exists("schools.csv"):
             'تعداد_دانش_آموز': [415, 490, 280, 350, 520, 150, 0, 390, 470, 330],
             'تعداد_معلم': [29, 31, 30, 24, 34, 12, 18, 26, 30, 23],
             'جنسیت': ['مختلط', 'پسرانه', 'مختلط', 'دخترانه', 'پسرانه', 'دخترانه', 'مختلط', 'پسرانه', 'دخترانه', 'مختلط'],
-            # مختصات‌های نزدیک گلستان برای تطبیق با GeoJSON
             'عرض_جغرافیایی': [37.3321, 37.3105, 37.2889, 37.3450, 37.2995, 37.3012, 37.3208, 37.3155, 37.2770, 37.3050],
             'طول_جغرافیایی': [54.5103, 54.4552, 54.5408, 54.4901, 54.4253, 54.5005, 54.4852, 54.5303, 54.4601, 54.4050]
         }
@@ -105,21 +119,36 @@ filtered_df = df[
 # --- آپلود GeoJSON برای محدوده آسیب (اصلاح شده) ---
 st.sidebar.markdown("---")
 st.sidebar.header("تعیین محدوده آسیب (GeoJSON)")
-geojson_file = st.sidebar.file_uploader(
+# این متغیر برای آپلود موقت استفاده می شود.
+geojson_file_upload = st.sidebar.file_uploader(
     "آپلود فایل GeoJSON (Polygon/MultiPolygon)",
     type=["geojson", "json"],
     help="برای مشخص کردن محدوده آسیب‌دیده از طریق فایل."
 )
 
-uploaded_geojson_data = None
-if geojson_file:
-    # *** رفع خطای "I/O operation on closed file" با خواندن مستقیم JSON ***
+if geojson_file_upload:
     try:
-        uploaded_geojson_data = json.load(geojson_file)
+        # ذخیره داده GeoJSON در session state
+        st.session_state.uploaded_geojson_data = json.load(geojson_file_upload)
         st.sidebar.success("فایل GeoJSON با موفقیت بارگذاری شد.")
     except Exception as e:
         st.sidebar.error(f"خطا در خواندن محتوای GeoJSON: {e}")
-        uploaded_geojson_data = None
+        st.session_state.uploaded_geojson_data = None
+
+
+# --- دکمه ریست ---
+def reset_app():
+    """پاک کردن GeoJSON آپلود شده و افزایش شمارنده ریست برای پاک کردن ترسیمات دستی."""
+    st.session_state.uploaded_geojson_data = None
+    st.session_state.reset_trigger += 1 # افزایش شمارنده برای رندر مجدد نقشه و پاک کردن ترسیمات
+    # ریست کردن موقعیت نقشه به حالت پیش فرض
+    st.session_state.initial_map_location = [37.0, 54.4]
+    st.session_state.initial_map_zoom = 9
+
+st.sidebar.markdown("---")
+if st.sidebar.button("پاک کردن محدوده‌ها و ریست نقشه"):
+    reset_app()
+    st.rerun()
 
 if filtered_df.empty:
     st.warning("با تنظیمات فیلتر فعلی، هیچ مدرسه معتبری برای نمایش وجود ندارد.")
@@ -130,23 +159,19 @@ st.info(f"تعداد کل مدارس نمایش داده شده: **{len(filtered
 
 # --- ۳. ساخت نقشه فولیم (Folium Map) ---
 
-# تنظیمات اولیه نقشه
-if 'initial_map_location' not in st.session_state:
-    st.session_state.initial_map_location = [df['عرض_جغرافیایی'].mean(), df['طول_جغرافیایی'].mean()] 
-    st.session_state.initial_map_zoom = 11
-
+# ساخت نقشه با استفاده از وضعیت ذخیره شده در session_state
 m = folium.Map(
-    location=st.session_state.initial_map_location, 
-    zoom_start=st.session_state.initial_map_zoom, 
+    location=st.session_state.initial_map_location, 
+    zoom_start=st.session_state.initial_map_zoom, 
     tiles="OpenStreetMap"
 )
 
 # تعریف رنگ‌ها بر اساس دسته مقطع
 category_colors = {
-    'ابتدایی/دبستان': '#28a745',       # سبز
-    'متوسطه': '#007bff',              # آبی
-    'فنی و حرفه‌ای': '#ffc107',       # زرد/نارنجی
-    'مراکز/سایر': '#dc3545',          # قرمز 
+    'ابتدایی/دبستان': '#28a745',       # سبز
+    'متوسطه': '#007bff',              # آبی
+    'فنی و حرفه‌ای': '#ffc107',       # زرد/نارنجی
+    'مراکز/سایر': '#dc3545',          # قرمز 
 }
 
 # --- اضافه کردن لایه مدارس به نقشه ---
@@ -175,14 +200,15 @@ for _, row in filtered_df.iterrows():
 
 
 # --- اضافه کردن GeoJSON آپلود شده به نقشه ---
+uploaded_geojson_data = st.session_state.uploaded_geojson_data
 if uploaded_geojson_data:
     folium.GeoJson(
         uploaded_geojson_data,
         name='محدوده آسیب (GeoJSON)',
         style_function=lambda x: {
-            'fillColor': '#dc3545', 
+            'fillColor': '#dc3545', 
             'color': '#dc3545',
-            'weight': 3, 
+            'weight': 3, 
             'fillOpacity': 0.3
         },
         tooltip=folium.Tooltip("محدوده آسیب بارگذاری شده از GeoJSON"),
@@ -199,8 +225,9 @@ Draw(
         'circle':False,
         'marker':False,
         'circlemarker':False,
-    }, 
+    }, 
     edit_options={'edit':True, 'remove':True}
+# استفاده از کلید ترکیبی با reset_trigger برای اطمینان از پاک شدن ترسیمات هنگام ریست
 ).add_to(m)
 
 folium.LayerControl().add_to(m)
@@ -228,23 +255,23 @@ with col1:
     search = st.text_input("جستجوی شهر/منطقه", placeholder="مثلاً: گرگان، تهران، مشهد")
 with col2:
     st.markdown("<br>", unsafe_allow_html=True)
-    go = st.button("برو به مکان")
-
-if go and search:
-    lat, lon, name = geocode_search(search)
-    if lat and lon:
-        st.session_state.initial_map_location = [lat, lon]
-        st.session_state.initial_map_zoom = 13
-        st.success(f"نقشه به: {name} جابجا شد.")
-        # Streamlit باید کل برنامه را اجرا کند تا نقشه رندر مجدد شود
-        st.rerun() 
-    else:
-        st.error("جستجو نشد یا نتیجه‌ای برای آن مکان یافت نشد.")
+    # از on_click برای جابجایی نقشه استفاده می‌کنیم
+    if st.button("برو به مکان"):
+        lat, lon, name = geocode_search(search)
+        if lat and lon:
+            # ذخیره موقعیت جدید در session state
+            st.session_state.initial_map_location = [lat, lon]
+            st.session_state.initial_map_zoom = 13
+            st.success(f"نقشه به: {name} جابجا شد.")
+            st.rerun() 
+        else:
+            st.error("جستجو نشد یا نتیجه‌ای برای آن مکان یافت نشد.")
 
 st.markdown("### نقشه مدارس و محدوده‌های آسیب")
 
 # نمایش نقشه و دریافت ورودی‌های ترسیم شده
-map_data = st_folium(m, width=1200, height=600, key="folium_map_final")
+# کلید نقشه باید با یک متغیر state (مانند reset_trigger) ترکیب شود تا با ریست، نقشه و ترسیمات آن پاک شوند.
+map_data = st_folium(m, width=1200, height=600, key=f"folium_map_final_{st.session_state.reset_trigger}")
 
 
 # --- ۵. تحلیل نقاط داخل پلی‌گون‌های ترسیم شده و GeoJSON ---
@@ -285,14 +312,11 @@ if uploaded_geojson_data:
         geometry = feature.get('geometry')
         if geometry:
             try:
-                # استفاده از shape() برای تبدیل GeoJSON به Shapely object
                 geo_obj = shape(geometry)
                 
-                # اگر MultiPolygon بود، هر پلی‌گون را جداگانه به لیست اضافه کن
                 if geo_obj.geom_type == 'MultiPolygon':
                     for poly in geo_obj.geoms:
                         all_shapely_polygons.append(poly)
-                # اگر Polygon بود، مستقیم به لیست اضافه کن
                 elif geo_obj.geom_type == 'Polygon':
                     all_shapely_polygons.append(geo_obj)
             except Exception as e:
@@ -311,7 +335,6 @@ if all_shapely_polygons:
 
 if multi_poly:
     # تعیین مدارس داخل محدوده
-    inside = []
     
     # استفاده از Shapely: Point(Lon, Lat)
     # اضافه کردن یک ستون موقت برای محاسبه
@@ -324,14 +347,36 @@ if multi_poly:
     
     if not result.empty:
         
-        # --- گزارش خلاصه کلی ---
+        # --- گزارش خلاصه کلی (اصلاح شده) ---
         total_schools = len(result)
         total_students = result['تعداد_دانش_آموز'].sum()
         total_teachers = result['تعداد_معلم'].sum()
         
         st.markdown("---")
-        st.success(f"تعداد مدارس آسیب‌دیده در محدوده‌های انتخابی: **{total_schools}**")
-        st.info(f"جمع کل دانش‌آموزان: **{total_students}** نفر | جمع کل معلمان: **{total_teachers}** نفر")
+        st.subheader("نتایج تحلیل آسیب‌پذیری")
+        
+        # استفاده از st.metric برای نمایش آمار آسیب‌دیده (رفع مشکل رنگ سبز)
+        col_metric1, col_metric2, col_metric3 = st.columns(3)
+        
+        with col_metric1:
+            st.metric(
+                label="تعداد مدارس آسیب‌دیده", 
+                value=total_schools,
+                delta="🚨 وضعیت خطر",
+                delta_color="off"
+            )
+        with col_metric2:
+            st.metric(
+                label="جمع کل دانش‌آموزان تحت تاثیر", 
+                value=total_students
+            )
+        with col_metric3:
+            st.metric(
+                label="جمع کل معلمان تحت تاثیر", 
+                value=total_teachers
+            )
+        
+        st.warning("⚠️ نتایج بالا صرفاً بر اساس همپوشانی مکانی است و نیاز به تأیید میدانی دارد.")
         
         st.markdown("### گزارش تفصیلی محدوده‌های آسیب‌دیده")
 
@@ -348,7 +393,7 @@ if multi_poly:
             gender_student_counts = result.groupby('جنسیت')['تعداد_دانش_آموز'].sum().reset_index(name='تعداد دانش‌آموز')
             gender_student_counts.columns = ['جنسیت', 'تعداد دانش‌آموز']
             st.dataframe(gender_student_counts, use_container_width=True, hide_index=True)
-        
+            
         st.markdown("---")
         st.subheader("لیست مدارس آسیب‌دیده")
         st.dataframe(
@@ -358,9 +403,9 @@ if multi_poly:
         )
         csv = result.to_csv(index=False, encoding="utf-8-sig").encode('utf-8-sig')
         st.download_button(
-            "دانلود لیست (CSV)", 
-            csv, 
-            "مدارس_آسیب_دیده.csv", 
+            "دانلود لیست (CSV)", 
+            csv, 
+            "مدارس_آسیب_دیده.csv", 
             "text/csv;charset=utf-8-sig"
         )
     else:

@@ -1,6 +1,10 @@
 streamlit
 pandas
+numpy
 folium
 streamlit-folium
 shapely
-requests
+geopandas
+fiona
+pyproj
+rtree

@@ -18,9 +18,9 @@ st.title("ارزیابی خسارت مدارس در بحران")
 
 # تعریف متغیرهای وضعیت (Session State) برای مدیریت وضعیت نقشه
 if 'initial_map_location' not in st.session_state:
-    # تعیین یک نمای کلی بزرگتر (مرکز گلستان) برای پوشش داده‌های dummy و نمای کلی‌تر
-    st.session_state.initial_map_location = [37.0, 54.4] 
-    st.session_state.initial_map_zoom = 9 # زوم کمتر برای نمای کلی تر
+    # اصلاح: تعیین مرکز ایران و زوم مناسب برای نمایش کل کشور به عنوان نمای پیش‌فرض
+    st.session_state.initial_map_location = [32.5, 53.0]  # مرکز تقریبی ایران
+    st.session_state.initial_map_zoom = 5 # زوم کمتر برای نمایش کل کشور
 if 'uploaded_geojson_data' not in st.session_state:
     st.session_state.uploaded_geojson_data = None
 if 'reset_trigger' not in st.session_state:
@@ -31,7 +31,7 @@ if 'reset_trigger' not in st.session_state:
 # ایجاد یک فایل dummy برای اجرای اولیه
 if not os.path.exists("schools.csv"):
     try:
-        # مختصات‌های نزدیک گلستان برای تطبیق با GeoJSON
+        # مختصات‌های نزدیک گلستان (همان داده‌های دامی قبلی)
         data = {
             'کد_مدرسه': [100013, 100014, 100015, 100016, 100017, 100018, 100019, 100020, 100021, 100022],
             'نام_مدرسه': ['دبستان شهدای گمنام', 'متوسطه اندیشه', 'فنی خوارزمی', 'دبستان آزادی', 'متوسطه فردوسی', 'پیش‌دبستانی شکوفه', 'مرکز مشاوران ۱', 'دبستان فجر', 'متوسطه الزهرا', 'دبستان هدف'],
@@ -139,9 +139,9 @@ def reset_app():
     """پاک کردن GeoJSON آپلود شده و افزایش شمارنده ریست برای پاک کردن ترسیمات دستی."""
     st.session_state.uploaded_geojson_data = None
     st.session_state.reset_trigger += 1 # افزایش شمارنده برای رندر مجدد نقشه و پاک کردن ترسیمات
-    # ریست کردن موقعیت نقشه به حالت پیش فرض
-    st.session_state.initial_map_location = [37.0, 54.4]
-    st.session_state.initial_map_zoom = 9
+    # ریست کردن موقعیت نقشه به حالت پیش فرض (نمای کلی ایران)
+    st.session_state.initial_map_location = [32.5, 53.0]
+    st.session_state.initial_map_zoom = 5
 
 st.sidebar.markdown("---")
 if st.sidebar.button("پاک کردن محدوده‌ها و ریست نقشه"):
@@ -257,7 +257,7 @@ with col2:
     if st.button("برو به مکان"):
         lat, lon, name = geocode_search(search)
         if lat and lon:
-            # ذخیره موقعیت جدید در session state
+            # ذخیره موقعیت جدید در session state برای فوکوس روی منطقه مورد جستجو
             st.session_state.initial_map_location = [lat, lon]
             st.session_state.initial_map_zoom = 13
             st.success(f"نقشه به: {name} جابجا شد.")

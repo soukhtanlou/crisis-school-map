@@ -6,8 +6,8 @@ from shapely.geometry import Polygon, Point, shape
 from shapely.ops import unary_union
 import requests
 import os
-import json 
-import io 
+import json
+import io
 import numpy as np
 
 # --- 0. Initialization and Setup ---
@@ -18,9 +18,7 @@ st.title("ارزیابی خسارت مدارس در بحران")
 
 # تعریف متغیرهای وضعیت (Session State) برای مدیریت وضعیت نقشه
 if 'initial_map_location' not in st.session_state:
-    # تعیین یک نمای کلی بزرگتر (مثلاً مرکز استان گلستان که داده‌های dummy در آن قرار دارند)
-    # برای نمایش کل کشور، می توان از مختصات تهران یا مختصات جنوب شرقی ایران استفاده کرد.
-    # در اینجا برای پوشش دادن داده های dummy از مختصات منطقی در گلستان استفاده می‌کنیم.
+    # تعیین یک نمای کلی بزرگتر (مرکز گلستان) برای پوشش داده‌های dummy و نمای کلی‌تر
     st.session_state.initial_map_location = [37.0, 54.4] 
     st.session_state.initial_map_zoom = 9 # زوم کمتر برای نمای کلی تر
 if 'uploaded_geojson_data' not in st.session_state:
@@ -161,17 +159,17 @@ st.info(f"تعداد کل مدارس نمایش داده شده: **{len(filtered
 
 # ساخت نقشه با استفاده از وضعیت ذخیره شده در session_state
 m = folium.Map(
-    location=st.session_state.initial_map_location, 
-    zoom_start=st.session_state.initial_map_zoom, 
+    location=st.session_state.initial_map_location, 
+    zoom_start=st.session_state.initial_map_zoom, 
     tiles="OpenStreetMap"
 )
 
 # تعریف رنگ‌ها بر اساس دسته مقطع
 category_colors = {
-    'ابتدایی/دبستان': '#28a745',       # سبز
-    'متوسطه': '#007bff',              # آبی
-    'فنی و حرفه‌ای': '#ffc107',       # زرد/نارنجی
-    'مراکز/سایر': '#dc3545',          # قرمز 
+    'ابتدایی/دبستان': '#28a745',       # سبز
+    'متوسطه': '#007bff',               # آبی
+    'فنی و حرفه‌ای': '#ffc107',        # زرد/نارنجی
+    'مراکز/سایر': '#dc3545',           # قرمز 
 }
 
 # --- اضافه کردن لایه مدارس به نقشه ---
@@ -206,9 +204,9 @@ if uploaded_geojson_data:
         uploaded_geojson_data,
         name='محدوده آسیب (GeoJSON)',
         style_function=lambda x: {
-            'fillColor': '#dc3545', 
+            'fillColor': '#dc3545', 
             'color': '#dc3545',
-            'weight': 3, 
+            'weight': 3, 
             'fillOpacity': 0.3
         },
         tooltip=folium.Tooltip("محدوده آسیب بارگذاری شده از GeoJSON"),
@@ -225,7 +223,7 @@ Draw(
         'circle':False,
         'marker':False,
         'circlemarker':False,
-    }, 
+    }, 
     edit_options={'edit':True, 'remove':True}
 # استفاده از کلید ترکیبی با reset_trigger برای اطمینان از پاک شدن ترسیمات هنگام ریست
 ).add_to(m)
@@ -263,7 +261,7 @@ with col2:
             st.session_state.initial_map_location = [lat, lon]
             st.session_state.initial_map_zoom = 13
             st.success(f"نقشه به: {name} جابجا شد.")
-            st.rerun() 
+            st.rerun() 
         else:
             st.error("جستجو نشد یا نتیجه‌ای برای آن مکان یافت نشد.")
 
@@ -403,9 +401,9 @@ if multi_poly:
         )
         csv = result.to_csv(index=False, encoding="utf-8-sig").encode('utf-8-sig')
         st.download_button(
-            "دانلود لیست (CSV)", 
-            csv, 
-            "مدارس_آسیب_دیده.csv", 
+            "دانلود لیست (CSV)", 
+            csv, 
+            "مدارس_آسیب_دیده.csv", 
             "text/csv;charset=utf-8-sig"
         )
     else:

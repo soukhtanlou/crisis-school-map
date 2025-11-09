@@ -126,6 +126,7 @@ geojson_file_upload = st.sidebar.file_uploader(
 if geojson_file_upload:
     try:
         # ذخیره داده GeoJSON در session state
+        geojson_file_upload.seek(0) # بازگشت نشانگر فایل به ابتدا
         st.session_state.uploaded_geojson_data = json.load(geojson_file_upload)
         st.sidebar.success("فایل GeoJSON با موفقیت بارگذاری شد.")
     except Exception as e:
@@ -243,6 +244,7 @@ def geocode_search(query):
             headers={'User-Agent': 'SchoolDamageAssessmentTool/1.0'}
         ).json()
         if r:
+            # استخراج و برگرداندن عرض جغرافیایی (Lat) و طول جغرافیایی (Lon)
             return float(r[0]["lat"]), float(r[0]["lon"]), r[0]['display_name'].split(',')[0]
         return None, None, None
     except Exception:
@@ -280,17 +282,23 @@ multi_poly = None
 # --- الف: پردازش پلی‌گون‌های دستی ترسیم شده (Manual Drawings) ---
 drawings_exist = False
 if map_data and map_data.get("all_drawings"):
-    polygons_coords = [
+    # مختصات‌های دریافتی از Draw plugin به صورت (Lat, Lon) هستند
+    polygons_coords_lat_lon = [
         drawing["geometry"]["coordinates"][0]
         for drawing in map_data["all_drawings"]
         if drawing["geometry"]["type"] == "Polygon"
     ]
     
-    if polygons_coords:
+    if polygons_coords_lat_lon:
         drawings_exist = True
         try:
-            # ایجاد Shapely Polygons از مختصات (Lon, Lat)
-            manual_polygons = [Polygon(coords) for coords in polygons_coords]
+            manual_polygons = []
+            # Shapely انتظار مختصات (Lon, Lat) را دارد، لذا باید مختصات معکوس شوند
+            for coords_lat_lon in polygons_coords_lat_lon:
+                # معکوس کردن مختصات از (Lat, Lon) به (Lon, Lat)
+                coords_lon_lat = [[lon, lat] for lat, lon in coords_lat_lon]
+                manual_polygons.append(Polygon(coords_lon_lat))
+                
             all_shapely_polygons.extend(manual_polygons)
         except Exception:
             st.warning("اشکالی در ایجاد هندسه پلی‌گون‌های دستی وجود دارد. لطفاً شکل‌های ترسیمی را بررسی کنید.")
@@ -315,6 +323,7 @@ if uploaded_geojson_data:
         geometry = feature.get('geometry')
         if geometry:
             try:
+                # shape() مختصات GeoJSON را به درستی (Lon, Lat) تفسیر می‌کند.
                 geo_obj = shape(geometry)
                 
                 if geo_obj.geom_type == 'MultiPolygon':
@@ -343,8 +352,7 @@ if drawings_exist or geojson_exist:
     if multi_poly:
         # تعیین مدارس داخل محدوده
         
-        # استفاده از Shapely: Point(Lon, Lat)
-        # اضافه کردن یک ستون موقت برای محاسبه
+        # نکته: Point هم باید با ترتیب (Lon, Lat) یا (طول، عرض) ایجاد شود که در اینجا درست است.
         filtered_df['is_inside'] = filtered_df.apply(
             lambda row: multi_poly.contains(Point(row["طول_جغرافیایی"], row["عرض_جغرافیایی"])),
             axis=1
